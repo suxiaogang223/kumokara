@@ -27,7 +27,11 @@ async fn handle_connection(socket: WebSocket, state: AppState) {
     let (sender, mut receiver) = socket.split();
     let sender = Arc::new(Mutex::new(sender));
     let attachments = Arc::new(Mutex::new(HashMap::new()));
-    let mut authenticated = false;
+    let mut authenticated = !state.auth_required();
+
+    if authenticated && send_auth_ok(&state, &sender).await.is_err() {
+        return;
+    }
 
     while let Some(Ok(frame)) = receiver.next().await {
         match frame {
@@ -81,11 +85,18 @@ async fn authenticate(
         let _ = send_auth_error(sender, "Send an auth message first").await;
         return Err(());
     };
-    if !state.auth_manager.validate_token(token) {
+    let Some(auth_manager) = &state.auth_manager else {
+        return send_auth_ok(state, sender).await.map_err(|_| ());
+    };
+    if !auth_manager.validate_token(token) {
         let _ = send_auth_error(sender, "Invalid authentication token").await;
         return Err(());
     }
 
+    send_auth_ok(state, sender).await.map_err(|_| ())
+}
+
+async fn send_auth_ok(state: &AppState, sender: &WsSender) -> anyhow::Result<()> {
     send_message(
         sender,
         &ServerMessage::AuthOk {
@@ -93,7 +104,6 @@ async fn authenticate(
         },
     )
     .await
-    .map_err(|_| ())
 }
 
 async fn handle_binary_input(state: &AppState, sender: &WsSender, data: &[u8]) {
@@ -128,13 +138,19 @@ async fn dispatch(
 ) -> anyhow::Result<()> {
     match message {
         ClientMessage::Auth { .. } => {
-            send_error(
-                sender,
-                None,
-                "INVALID_MESSAGE",
-                "Connection is already authenticated",
-            )
-            .await?;
+            if state.auth_required() {
+                send_error(
+                    sender,
+                    None,
+                    "INVALID_MESSAGE",
+                    "Connection is already authenticated",
+                )
+                .await?;
+            } else {
+                // Keep auth disabled mode tolerant of clients reconnecting with
+                // a token retained from a previously protected server.
+                send_auth_ok(state, sender).await?;
+            }
         }
         ClientMessage::SessionCreate {
             request_id,

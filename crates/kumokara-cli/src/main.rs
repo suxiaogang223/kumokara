@@ -17,6 +17,10 @@ use std::process;
     long_about = "A self-hosted, agent-neutral terminal with persistent browser-independent sessions."
 )]
 struct Cli {
+    /// Require token authentication and print a generated token at startup
+    #[arg(long, global = true)]
+    require_token: bool,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -45,14 +49,14 @@ async fn main() {
 
     match cli.command {
         Some(Commands::Server { bind }) => {
-            if let Err(e) = commands::server::run_server(&bind).await {
+            if let Err(e) = commands::server::run_server(&bind, cli.require_token).await {
                 eprintln!("Error: {e}");
                 process::exit(1);
             }
         }
         None => {
             // Default: Local mode — start server + open browser
-            if let Err(e) = commands::local::run_local().await {
+            if let Err(e) = commands::local::run_local(cli.require_token).await {
                 eprintln!("Error: {e}");
                 process::exit(1);
             }

@@ -13,10 +13,8 @@ export function Terminal({ sessionId }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const xtermRef = useRef<XTerm | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
-  const sessionIdRef = useRef<string | null>(sessionId)
+  const attachedSessionRef = useRef<string | null>(null)
   const ws = useSessionStore((s) => s.ws)
-
-  sessionIdRef.current = sessionId
 
   useEffect(() => {
     if (!containerRef.current) return
@@ -47,7 +45,7 @@ export function Terminal({ sessionId }: Props) {
     const sendResize = () => {
       fitAddon.fit()
       const currentWs = useSessionStore.getState().ws
-      const currentSid = sessionIdRef.current
+      const currentSid = attachedSessionRef.current
       if (currentWs?.readyState === WebSocket.OPEN && currentSid) {
         currentWs.send(JSON.stringify({
           type: 'terminal_resize',
@@ -61,14 +59,14 @@ export function Terminal({ sessionId }: Props) {
     resizeObserver.observe(containerRef.current)
 
     const unsub = onTerminalOutput((sid, _seq, data) => {
-      if (sid === sessionIdRef.current && xtermRef.current) {
+      if (sid === attachedSessionRef.current && xtermRef.current) {
         xtermRef.current.write(data)
       }
     })
 
     const handleData = (data: string) => {
       const currentWs = useSessionStore.getState().ws
-      const currentSid = sessionIdRef.current
+      const currentSid = attachedSessionRef.current
       if (currentWs && currentSid && currentWs.readyState === WebSocket.OPEN) {
         const encoder = new TextEncoder()
         const bytes = encoder.encode(data)
@@ -97,7 +95,15 @@ export function Terminal({ sessionId }: Props) {
 
   useEffect(() => {
     if (sessionId && xtermRef.current && ws?.readyState === WebSocket.OPEN) {
-      xtermRef.current.clear()
+      const term = xtermRef.current
+
+      // Agent TUIs commonly enable xterm mouse reporting. Clearing only the
+      // viewport preserves that mode and leaks mouse coordinates into the next
+      // shell. Disconnect input first, then reset all terminal modes.
+      attachedSessionRef.current = null
+      term.reset()
+      attachedSessionRef.current = sessionId
+
       ws.send(JSON.stringify({
         type: 'session_attach',
         request_id: crypto.randomUUID(),
@@ -107,10 +113,13 @@ export function Terminal({ sessionId }: Props) {
       ws.send(JSON.stringify({
         type: 'terminal_resize',
         session_id: sessionId,
-        cols: xtermRef.current.cols,
-        rows: xtermRef.current.rows,
+        cols: term.cols,
+        rows: term.rows,
       }))
       return () => {
+        if (attachedSessionRef.current === sessionId) {
+          attachedSessionRef.current = null
+        }
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({
             type: 'session_detach',

@@ -18,7 +18,6 @@ export function useWebSocket() {
   const authToken = useSessionStore((state) => state.authToken)
 
   useEffect(() => {
-    if (!authToken) return
     let disposed = false
 
     const clearTimers = () => {
@@ -45,6 +44,7 @@ export function useWebSocket() {
           store.setAuthState('authenticated')
           store.setWs(socketRef.current)
           requestSessions()
+          if (refreshRef.current !== null) window.clearInterval(refreshRef.current)
           refreshRef.current = window.setInterval(requestSessions, 2500)
           break
         case 'auth_error':
@@ -81,7 +81,11 @@ export function useWebSocket() {
       const socket = new WebSocket(`${protocol}//${window.location.host}/api/ws`)
       socketRef.current = socket
 
-      socket.onopen = () => socket.send(JSON.stringify({ type: 'auth', token: authToken } satisfies ClientMessage))
+      socket.onopen = () => {
+        if (authToken) {
+          socket.send(JSON.stringify({ type: 'auth', token: authToken } satisfies ClientMessage))
+        }
+      }
       socket.onmessage = (event) => {
         if (typeof event.data !== 'string') return
         try {

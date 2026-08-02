@@ -35,17 +35,19 @@ cd web && npm install && npm run build && cd ..
 cargo run
 ```
 
-Enter the token printed by the server, click **New shell**, then start whichever
-agent you want from the terminal.
+Kumokara starts without authentication for local development and creates a shell
+in the server's launch directory automatically. Start whichever agent you want
+from that terminal; use **+** when you need another session.
 
 For a remote host:
 
 ```bash
-kumokara server --bind 0.0.0.0:9876
+kumokara server --bind 0.0.0.0:9876 --require-token
 ```
 
 Put TLS or a trusted reverse proxy in front of an internet-facing deployment.
-The WebSocket control connection requires the server token as its first message.
+`--require-token` prints a random token and requires it as the first WebSocket
+message. Never expose the default no-auth mode to an untrusted network.
 
 ## Architecture
 

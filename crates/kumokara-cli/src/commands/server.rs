@@ -4,12 +4,11 @@
 //! Designed for VPS / home server deployments.
 
 use anyhow::Result;
-use kumokara_auth::AuthManager;
 use kumokara_server::{serve, AppState};
 use std::net::SocketAddr;
 
 /// Run Kumokara in server (daemon) mode.
-pub async fn run_server(bind: &str) -> Result<()> {
+pub async fn run_server(bind: &str, require_token: bool) -> Result<()> {
     // Detect tmux
     match kumokara_engine::detect_tmux() {
         Some(version) => {
@@ -20,10 +19,7 @@ pub async fn run_server(bind: &str) -> Result<()> {
         }
     }
 
-    let auth_manager = AuthManager::new();
-    let token = auth_manager.server_token().to_string();
-    println!("→ Token: {token}");
-    let state = AppState::new(auth_manager);
+    let state = AppState::new(super::configure_auth(require_token));
 
     let addr: SocketAddr = bind.parse()?;
     tracing::info!("Starting server on {}", addr);

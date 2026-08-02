@@ -142,6 +142,12 @@ Attach 顺序：
 
 ## 6. 生命周期
 
+### Server 启动
+
+- Registry 为空时自动创建一个 Shell Session；
+- 初始 cwd 为 Server 启动目录，默认尺寸为 100 × 30；
+- 浏览器认证后通过 `session_list` 获取并自动选中它，不在前端重复创建。
+
 ### 浏览器断开
 
 - attachment 结束；
@@ -159,7 +165,7 @@ Attach 顺序：
 
 当前 portable-pty Session 会终止。完整恢复需要 tmux control-mode backend：启动时枚举
 带 Kumokara metadata 的 tmux session，重建 Registry，再恢复输出订阅。未完成前不得
-宣称支持 Server crash recovery。
+宣称支持 Server crash recovery；当前重启后只会创建一个新的默认 Session。
 
 ## 7. cwd 与项目上下文绑定
 
@@ -195,9 +201,13 @@ terminal_resize { session_id, cols, rows }
 协议不包含 `workspace_id`、Workspace 消息或 Workspace REST API。Agent 也不通过协议
 单独启动；用户始终在普通 Shell 中运行 Agent。
 
+Server 默认使用无鉴权开发模式：连接建立后主动发送 `auth_ok`。使用
+`--require-token` 启动时，首条客户端消息必须为 `auth`，验证通过后才允许控制 Session。
+
 ## 9. 安全边界
 
-- WebSocket 首条消息必须验证 token；
+- 默认无鉴权模式只用于本机开发；监听非受信网络时必须启用 `--require-token`；
+- token 模式下 WebSocket 首条客户端消息必须通过验证；
 - health check 和静态前端不涉及控制能力，Session 控制只通过已认证的 WebSocket；
 - 静态文件使用 `ServeDir`，不得手工拼接 URL path；
 - Remote 模式应放在 TLS/reverse proxy 后；

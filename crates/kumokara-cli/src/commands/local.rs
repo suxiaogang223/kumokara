@@ -2,12 +2,11 @@
 //!
 //! Implements the startup experience from DESIGN.md §2:
 //! 1. Detect tmux version → show recovery status
-//! 2. Generate an access token
+//! 2. Configure optional token authentication
 //! 3. Start the server on localhost
 //! 4. Open the browser
 
 use anyhow::Result;
-use kumokara_auth::AuthManager;
 use kumokara_engine::detect_tmux;
 use kumokara_server::{serve, AppState};
 use std::net::SocketAddr;
@@ -26,7 +25,7 @@ const BANNER: &str = r"
 /// Run Kumokara in Local mode.
 ///
 /// Starts the server bound to 127.0.0.1:9876 and opens the browser.
-pub async fn run_local() -> Result<()> {
+pub async fn run_local(require_token: bool) -> Result<()> {
     // Print ASCII banner
     println!("{BANNER}");
 
@@ -40,10 +39,7 @@ pub async fn run_local() -> Result<()> {
         }
     }
 
-    let auth_manager = AuthManager::new();
-    let token = auth_manager.server_token().to_string();
-    println!("→ Token: {token}");
-    let state = AppState::new(auth_manager);
+    let state = AppState::new(super::configure_auth(require_token));
 
     let addr: SocketAddr = "127.0.0.1:9876".parse()?;
     println!("→ Server listening on http://{addr}");

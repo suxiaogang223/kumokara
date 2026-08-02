@@ -15,26 +15,38 @@ use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 
+const DEFAULT_TERMINAL_COLS: u16 = 100;
+const DEFAULT_TERMINAL_ROWS: u16 = 30;
+
 #[derive(Clone)]
 pub struct AppState {
-    pub auth_manager: Arc<AuthManager>,
+    pub auth_manager: Option<Arc<AuthManager>>,
     pub session_registry: Arc<SessionRegistry>,
     pub version: String,
     pub tmux_available: bool,
 }
 
 impl AppState {
-    pub fn new(auth_manager: AuthManager) -> Self {
+    pub fn new(auth_manager: Option<AuthManager>) -> Self {
         Self {
-            auth_manager: Arc::new(auth_manager),
+            auth_manager: auth_manager.map(Arc::new),
             session_registry: Arc::new(SessionRegistry::new()),
             version: env!("CARGO_PKG_VERSION").to_string(),
             tmux_available: has_tmux(),
         }
     }
+
+    pub fn auth_required(&self) -> bool {
+        self.auth_manager.is_some()
+    }
 }
 
 pub async fn serve(addr: SocketAddr, state: AppState) -> Result<()> {
+    ensure_default_session(&state).await?;
+    if !state.auth_required() {
+        tracing::warn!("Authentication is disabled; use --require-token outside trusted development environments");
+    }
+
     let dist_dir = find_dist_dir();
     let spa =
         ServeDir::new(&dist_dir).not_found_service(ServeFile::new(dist_dir.join("index.html")));
@@ -53,6 +65,20 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> Result<()> {
     tracing::info!(%addr, "Kumokara server listening");
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
+    Ok(())
+}
+
+async fn ensure_default_session(state: &AppState) -> Result<()> {
+    if state.session_registry.count().await == 0 {
+        state
+            .session_registry
+            .create_shell_session(
+                std::env::current_dir()?,
+                DEFAULT_TERMINAL_COLS,
+                DEFAULT_TERMINAL_ROWS,
+            )
+            .await?;
+    }
     Ok(())
 }
 
@@ -78,6 +104,7 @@ async fn health_check(
         "status": "ok",
         "version": state.version,
         "tmux_available": state.tmux_available,
+        "auth_required": state.auth_required(),
         "session_count": state.session_registry.count().await,
     }))
 }

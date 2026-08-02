@@ -17,32 +17,34 @@ async fn available_port() -> u16 {
         .port()
 }
 
-async fn spawn_test_server() -> (SocketAddr, String) {
+async fn spawn_test_server(auth: Option<AuthManager>) -> (SocketAddr, Option<String>) {
     let addr = format!("127.0.0.1:{}", available_port().await)
         .parse()
         .unwrap();
-    let auth = AuthManager::new();
-    let token = auth.server_token().to_string();
+    let token = auth
+        .as_ref()
+        .map(|manager| manager.server_token().to_string());
     tokio::spawn(serve(addr, AppState::new(auth)));
     tokio::time::sleep(Duration::from_millis(300)).await;
     (addr, token)
 }
 
 #[tokio::test]
-async fn health_reports_session_count() {
-    let (addr, _) = spawn_test_server().await;
+async fn startup_creates_one_default_session() {
+    let (addr, _) = spawn_test_server(None).await;
     let response = reqwest::get(format!("http://{addr}/api/health"))
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
     let body: serde_json::Value = response.json().await.unwrap();
     assert_eq!(body["status"], "ok");
-    assert_eq!(body["session_count"], 0);
+    assert_eq!(body["auth_required"], false);
+    assert_eq!(body["session_count"], 1);
 }
 
 #[tokio::test]
 async fn websocket_requires_auth_as_the_first_message() {
-    let (addr, _) = spawn_test_server().await;
+    let (addr, _) = spawn_test_server(Some(AuthManager::new())).await;
     let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/api/ws"))
         .await
         .unwrap();
@@ -57,10 +59,38 @@ async fn websocket_requires_auth_as_the_first_message() {
 }
 
 #[tokio::test]
+async fn websocket_connects_without_auth_by_default() {
+    let (addr, _) = spawn_test_server(None).await;
+    let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/api/ws"))
+        .await
+        .unwrap();
+
+    assert_eq!(recv_json(&mut socket).await["type"], "auth_ok");
+    socket
+        .send(json_message(serde_json::json!({
+            "type": "auth",
+            "token": "retained-client-token"
+        })))
+        .await
+        .unwrap();
+    assert_eq!(recv_json(&mut socket).await["type"], "auth_ok");
+    socket
+        .send(json_message(serde_json::json!({
+            "type": "session_list",
+            "request_id": "list"
+        })))
+        .await
+        .unwrap();
+    let listed = recv_until_type(&mut socket, "session_list").await;
+    assert_eq!(listed["sessions"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
 async fn session_survives_websocket_reconnect() {
     use base64::Engine;
 
-    let (addr, token) = spawn_test_server().await;
+    let (addr, token) = spawn_test_server(Some(AuthManager::new())).await;
+    let token = token.unwrap();
     let url = format!("ws://{addr}/api/ws");
     let (mut first, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
     authenticate(&mut first, &token).await;
