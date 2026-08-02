@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { Terminal as XTerm } from '@xterm/xterm'
+import { Terminal as XTerm, type ITheme } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import { onTerminalOutput } from '../hooks/useWebSocket'
@@ -7,9 +7,12 @@ import { useSessionStore } from '../store/sessionStore'
 
 interface Props {
   sessionId: string
+  theme: ITheme
+  fontFamily: string
+  fontSize: number
 }
 
-export function Terminal({ sessionId }: Props) {
+export function Terminal({ sessionId, theme, fontFamily, fontSize }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const xtermRef = useRef<XTerm | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
@@ -21,17 +24,9 @@ export function Terminal({ sessionId }: Props) {
 
     const term = new XTerm({
       cursorBlink: true,
-      fontSize: 14,
-      fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
-      theme: {
-        background: '#0b101b', foreground: '#dce4f5', cursor: '#86eaff',
-        selectionBackground: '#86eaff33', black: '#111827', red: '#ff7d86',
-        green: '#75d99f', yellow: '#e8c66a', blue: '#77bdfb', magenta: '#c49aff',
-        cyan: '#86eaff', white: '#dce4f5', brightBlack: '#65718a',
-        brightRed: '#ff9ba2', brightGreen: '#9ee8ba', brightYellow: '#f2d98e',
-        brightBlue: '#9bd0ff', brightMagenta: '#d7b7ff', brightCyan: '#b5f3ff',
-        brightWhite: '#ffffff',
-      },
+      fontSize,
+      fontFamily,
+      theme,
     })
 
     const fitAddon = new FitAddon()
@@ -92,6 +87,18 @@ export function Terminal({ sessionId }: Props) {
       term.dispose()
     }
   }, [])
+
+  useEffect(() => {
+    if (!xtermRef.current) return
+    xtermRef.current.options.theme = { ...theme }
+  }, [theme])
+
+  useEffect(() => {
+    if (!xtermRef.current) return
+    xtermRef.current.options.fontFamily = fontFamily
+    xtermRef.current.options.fontSize = fontSize
+    fitAddonRef.current?.fit()
+  }, [fontFamily, fontSize])
 
   useEffect(() => {
     if (sessionId && xtermRef.current && ws?.readyState === WebSocket.OPEN) {

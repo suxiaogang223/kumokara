@@ -121,7 +121,21 @@ cli        本地与 daemon 启动入口
 没有真实运行职责的 Agent、Event、Workspace、SSH、Shell-integration 占位 crate 不保留；
 等对应能力进入可运行路径时再按职责增加模块。
 
-## 5. Attach 与输出一致性
+## 5. 外观设置
+
+Appearance 是浏览器本地偏好，不属于 Session、Project Context 或服务端协议：
+
+- `Auto` 跟随系统 `prefers-color-scheme`，同时保存独立的 Light/Dark 主题选择；
+- 一个主题同时定义应用 UI palette 和 xterm ANSI palette，切换时保持外壳与终端一致；
+- 字体族和字号显式由用户设置，并动态应用到所有终端；
+- 默认使用可移植的系统等宽字体栈，不探测、不下载，也不优先选择 Nerd Font；
+- Oh My Posh 等提示符需要图标时，由用户安装相应 Nerd Font 并填写准确的 font-family；
+- 当前偏好保存在浏览器 `localStorage`，不引入服务端用户设置模型。
+
+内置主题只保存颜色数据，Settings 面板根据同一份数据生成预览，避免维护一套与实际
+终端主题不一致的展示配置。
+
+## 6. Attach 与输出一致性
 
 输出数据按 chunk 分配单调递增的 `seq`。OutputHistory 只淘汰最旧 chunk，读取不消费
 历史，因此多个客户端可以独立重连。
@@ -140,7 +154,7 @@ Attach 顺序：
 当前 history 保存原始终端字节。后续如需严格 screen dump，应引入服务端 VT 状态机，
 不能把原始日志文本伪装成屏幕快照。
 
-## 6. 生命周期
+## 7. 生命周期
 
 ### Server 启动
 
@@ -167,7 +181,7 @@ Attach 顺序：
 带 Kumokara metadata 的 tmux session，重建 Registry，再恢复输出订阅。未完成前不得
 宣称支持 Server crash recovery；当前重启后只会创建一个新的默认 Session。
 
-## 7. cwd 与项目上下文绑定
+## 8. cwd 与项目上下文绑定
 
 新 Session 默认从 Server 启动目录开始，也可由受信客户端传入初始 cwd。Server 对
 路径做 canonicalize 并确认其为目录。
@@ -182,7 +196,7 @@ macOS/Linux 上定期检查 PTY shell 及其子进程：
 Process discovery 是 best-effort。Provider hooks 将用于更精确的 session id、任务状态
 和审批事件，但不能改变用户“在 Shell 里直接启动 Agent”的路径。
 
-## 8. 协议
+## 9. 协议
 
 主要控制消息：
 
@@ -204,7 +218,7 @@ terminal_resize { session_id, cols, rows }
 Server 默认使用无鉴权开发模式：连接建立后主动发送 `auth_ok`。使用
 `--require-token` 启动时，首条客户端消息必须为 `auth`，验证通过后才允许控制 Session。
 
-## 9. 安全边界
+## 10. 安全边界
 
 - 默认无鉴权模式只用于本机开发；监听非受信网络时必须启用 `--require-token`；
 - token 模式下 WebSocket 首条客户端消息必须通过验证；
@@ -213,7 +227,7 @@ Server 默认使用无鉴权开发模式：连接建立后主动发送 `auth_ok`
 - Remote 模式应放在 TLS/reverse proxy 后；
 - cwd 和进程访问默认采用单用户自部署信任模型；多用户部署前必须增加 OS 级隔离。
 
-## 10. 下一阶段
+## 11. 下一阶段
 
 按以下顺序继续，避免再次铺设未接通的占位模块：
 
@@ -226,3 +240,21 @@ Server 默认使用无鉴权开发模式：连接建立后主动发送 `auth_ok`
 
 每阶段必须包含真实 PTY 生命周期测试：create、input/output、browser detach、reattach、
 resize、destroy，以及对应的鉴权和恢复测试。
+
+### Agent Adapter 抽象 TODO
+
+当前 Agent 支持只负责通过进程名识别 provider 和 cwd，继续保留简单的数据驱动实现，
+暂不引入统一的 `AgentAdapter` trait 或 provider 类层级。
+
+先选择一个 Agent 完成端到端适配，并明确其全部实际行为，包括：
+
+- 进程与 CLI session ID 发现；
+- running、waiting、approval 等状态表达；
+- resume/reconnect 行为；
+- hooks、事件和审批交互；
+- 模型、任务等可选元数据；
+- Agent 退出后退化回普通 Shell 的生命周期。
+
+只有上述行为经过真实使用并形成稳定规范后，才提取公共 `AgentAdapter` 接口、能力声明
+和注册机制。其他 Agent 在此之前继续通过 Generic PTY 工作，避免根据未知需求提前设计
+抽象层。

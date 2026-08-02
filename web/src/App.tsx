@@ -1,11 +1,18 @@
 import { FormEvent, useCallback, useState } from 'react'
 import { SessionPanel } from './components/SessionPanel'
+import { SettingsPanel } from './components/SettingsPanel'
 import { Terminal } from './components/Terminal'
+import { useAppearance } from './hooks/useAppearance'
 import { useWebSocket } from './hooks/useWebSocket'
+import { useAppearanceStore } from './store/appearanceStore'
 import { useSessionStore } from './store/sessionStore'
 
 export default function App() {
   const [tokenInput, setTokenInput] = useState('')
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const { appearance, theme } = useAppearance()
+  const fontFamily = useAppearanceStore((state) => state.fontFamily)
+  const fontSize = useAppearanceStore((state) => state.fontSize)
   const authState = useSessionStore((state) => state.authState)
   const authError = useSessionStore((state) => state.authErrorMessage)
   const setAuthToken = useSessionStore((state) => state.setAuthToken)
@@ -82,14 +89,22 @@ export default function App() {
             <span className="terminal-title">{selectedSession?.title ?? 'Kumokara'}</span>
             {selectedSession && <span className="terminal-cwd">{selectedSession.cwd}</span>}
           </div>
-          <span className={connected ? 'connection-status is-online' : 'connection-status'}>
-            {connected ? '● online' : '○ reconnecting'}
-          </span>
+          <div className="terminal-actions">
+            <span className={connected ? 'connection-status is-online' : 'connection-status'}>
+              {connected ? '● online' : '○ reconnecting'}
+            </span>
+            <button className="header-icon-button" onClick={() => setSettingsOpen(true)} title="Settings" aria-label="Settings">⚙</button>
+          </div>
         </header>
 
         <div className="terminal-content">
           {selectedSessionId ? (
-            <Terminal sessionId={selectedSessionId} />
+            <Terminal
+              sessionId={selectedSessionId}
+              theme={theme.terminal}
+              fontFamily={fontFamily}
+              fontSize={fontSize}
+            />
           ) : (
             <div className="empty-state">
               <p>Open a shell, then run Claude Code, Codex, OpenCode, or any CLI inside it.</p>
@@ -98,6 +113,9 @@ export default function App() {
           )}
         </div>
       </section>
+      {settingsOpen && (
+        <SettingsPanel activeAppearance={appearance} onClose={() => setSettingsOpen(false)} />
+      )}
     </main>
   )
 }

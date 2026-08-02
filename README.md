@@ -39,6 +39,12 @@ Kumokara starts without authentication for local development and creates a shell
 in the server's launch directory automatically. Start whichever agent you want
 from that terminal; use **+** when you need another session.
 
+Open **Settings → Appearance** from the terminal header to choose `Auto`, `Light`,
+or `Dark`, select separate light and dark color themes, and change the terminal
+font family or size. Settings are stored in the current browser. Kumokara keeps a
+portable system monospace stack by default; if a prompt such as Oh My Posh uses
+Nerd Font icons, install a Nerd Font and enter its exact family name in Settings.
+
 For a remote host:
 
 ```bash
