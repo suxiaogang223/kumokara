@@ -1,9 +1,4 @@
-//! kumokara-auth — Minimal token-based authentication for Phase 0.
-//!
-//! Phase 0: single statically-configured token.
-//! Phase 3: extended with API Keys + GitHub OAuth.
-
-pub mod middleware;
+//! Token generation and validation for Kumokara connections.
 
 use rand::Rng;
 use std::sync::Arc;
@@ -11,7 +6,7 @@ use std::sync::Arc;
 /// Manages authentication tokens.
 #[derive(Clone)]
 pub struct AuthManager {
-    /// The valid server token (Phase 0: single token)
+    /// The single valid server token.
     server_token: Arc<String>,
 }
 
@@ -31,7 +26,7 @@ impl AuthManager {
         }
     }
 
-    /// Validate a token against the stored server token.
+    /// Validate a token against the stored token.
     pub fn validate_token(&self, token: &str) -> bool {
         // Constant-time comparison to prevent timing attacks
         let stored = self.server_token.as_bytes();

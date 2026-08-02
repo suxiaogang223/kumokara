@@ -3,12 +3,7 @@ resolver = "2"
 members = [
     "crates/kumokara-protocol",
     "crates/kumokara-engine",
-    "crates/kumokara-shellint",
-    "crates/kumokara-event",
-    "crates/kumokara-workspace",
     "crates/kumokara-auth",
-    "crates/kumokara-agent",
-    "crates/kumokara-ssh",
     "crates/kumokara-server",
     "crates/kumokara-cli",
 ]
@@ -22,25 +17,17 @@ authors = ["Kumokara Contributors"]
 [workspace.dependencies]
 tokio = { version = "1", features = ["full"] }
 axum = { version = "0.8", features = ["ws"] }
-axum-extra = "0.10"
-tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "fs"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-serde_yaml = "0.9"
-sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
-uuid = { version = "1", features = ["v4", "serde"] }
-chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+chrono = "0.4"
 portable-pty = "0.9"
 clap = { version = "4", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
-thiserror = "2"
-dirs = "6"
 futures = "0.3"
-bytes = "1"
-ringbuf = "0.4"
 
 # Protocol crate (minimal deps)
 kumokara-protocol = { path = "crates/kumokara-protocol" }
@@ -48,23 +35,8 @@ kumokara-protocol = { path = "crates/kumokara-protocol" }
 # Engine
 kumokara-engine = { path = "crates/kumokara-engine" }
 
-# Shell integration
-kumokara-shellint = { path = "crates/kumokara-shellint" }
-
-# Event system
-kumokara-event = { path = "crates/kumokara-event" }
-
-# Workspace management
-kumokara-workspace = { path = "crates/kumokara-workspace" }
-
 # Auth
 kumokara-auth = { path = "crates/kumokara-auth" }
-
-# Agent
-kumokara-agent = { path = "crates/kumokara-agent" }
-
-# SSH
-kumokara-ssh = { path = "crates/kumokara-ssh" }
 
 # Server
 kumokara-server = { path = "crates/kumokara-server" }

@@ -1,10 +1,7 @@
-//! WebSocket handler — connection upgrades, auth first-message, and message dispatch.
-//!
-//! Following DESIGN.md §5.1:
-//! - Authentication is via the first message after WebSocket connection (must be `auth { token }`)
-//! - Control messages use text frames (JSON tagged enum)
-//! - Terminal I/O uses binary frames (24-byte header + raw data)
+//! Authenticated WebSocket transport for session control and terminal I/O.
 
+use crate::session_registry::TerminalChunk;
+use crate::AppState;
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
@@ -12,325 +9,344 @@ use axum::{
     },
     response::IntoResponse,
 };
-use futures::{SinkExt, StreamExt};
+use futures::{stream::SplitSink, SinkExt, StreamExt};
 use kumokara_protocol::messages::{ClientMessage, ServerMessage};
-use kumokara_protocol::workspace::CreateWorkspaceRequest;
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{broadcast, Mutex};
 
-use crate::AppState;
+type WsSender = Arc<Mutex<SplitSink<WebSocket, Message>>>;
+type AttachmentTasks = Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>;
 
-/// Upgrade an HTTP connection to WebSocket.
-pub async fn ws_upgrade(
-    ws: WebSocketUpgrade,
-    State(state): State<AppState>,
-) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_ws_connection(socket, state))
+pub async fn ws_upgrade(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| handle_connection(socket, state))
 }
 
-/// Handle a WebSocket connection lifecycle.
-async fn handle_ws_connection(socket: WebSocket, state: AppState) {
+async fn handle_connection(socket: WebSocket, state: AppState) {
     let (sender, mut receiver) = socket.split();
-
-    // Shared sender for use across async tasks
     let sender = Arc::new(Mutex::new(sender));
+    let attachments = Arc::new(Mutex::new(HashMap::new()));
     let mut authenticated = false;
 
-    tracing::info!("WebSocket connection established, waiting for auth");
-
-    // Process messages
-    while let Some(Ok(msg)) = receiver.next().await {
-        match msg {
+    while let Some(Ok(frame)) = receiver.next().await {
+        match frame {
             Message::Text(text) => {
-                let text_str = text.to_string();
-
-                // Parse the client message
-                let client_msg: ClientMessage = match serde_json::from_str(&text_str) {
-                    Ok(msg) => msg,
-                    Err(e) => {
-                        let _ = send_error(&sender, None, "INVALID_MESSAGE", &e.to_string()).await;
+                let message = match serde_json::from_str::<ClientMessage>(&text) {
+                    Ok(message) => message,
+                    Err(error) => {
+                        let _ =
+                            send_error(&sender, None, "INVALID_MESSAGE", &error.to_string()).await;
                         continue;
                     }
                 };
 
-                // Handle auth first — required before any other message
                 if !authenticated {
-                    if let ClientMessage::Auth { token } = &client_msg {
-                        if state.auth_manager.validate_token(token) {
+                    match authenticate(&state, &sender, &message).await {
+                        Ok(()) => {
                             authenticated = true;
-                            let response = ServerMessage::AuthOk {
-                                server_version: state.version.clone(),
-                            };
-                            let _ = send_message(&sender, &response).await;
-                            tracing::info!("WebSocket client authenticated");
                             continue;
-                        } else {
-                            let response = ServerMessage::AuthError {
-                                code: "AUTH_INVALID".to_string(),
-                                message: "Invalid authentication token".to_string(),
-                            };
-                            let _ = send_message(&sender, &response).await;
-                            tracing::warn!("WebSocket auth failed — invalid token");
-                            break; // Close connection on auth failure
                         }
-                    } else {
-                        let response = ServerMessage::AuthError {
-                            code: "AUTH_INVALID".to_string(),
-                            message: "Authentication required — send auth message first".to_string(),
-                        };
-                        let _ = send_message(&sender, &response).await;
-                        break; // Close connection
+                        Err(()) => break,
                     }
                 }
 
-                // Dispatch authenticated messages
-                if let Err(e) = dispatch_message(&state, &sender, client_msg).await {
-                    tracing::error!("Error dispatching message: {}", e);
+                if let Err(error) = dispatch(&state, &sender, &attachments, message).await {
+                    tracing::warn!(%error, "failed to handle WebSocket message");
                 }
             }
-
-            Message::Binary(data) => {
-                if !authenticated {
-                    let response = ServerMessage::AuthError {
-                        code: "AUTH_INVALID".to_string(),
-                        message: "Authentication required".to_string(),
-                    };
-                    let _ = send_message(&sender, &response).await;
-                    break;
-                }
-
-                // Binary frames: 24-byte header followed by terminal data
-                // Header: 16 bytes session_id UUID + 8 bytes seq u64 (big-endian)
-                if data.len() >= 24 {
-                    let session_id_bytes = &data[..16];
-                    let session_id = uuid::Uuid::from_slice(session_id_bytes)
-                        .map(|u| u.to_string())
-                        .unwrap_or_default();
-                    let _seq = u64::from_be_bytes(data[16..24].try_into().unwrap_or([0; 8]));
-                    let terminal_data = &data[24..];
-
-                    // Forward terminal input to the PTY
-                    // Phase 0: pass through (PTY forwarding will be connected in full server)
-                    tracing::debug!(
-                        "Binary terminal input: session={}, len={}",
-                        session_id,
-                        terminal_data.len()
-                    );
-                }
+            Message::Binary(data) if authenticated => {
+                handle_binary_input(&state, &sender, &data).await;
             }
-
-            Message::Close(_) => {
-                tracing::info!("WebSocket client disconnected");
+            Message::Binary(_) => {
+                let _ = send_auth_error(&sender, "Authentication required").await;
                 break;
             }
-
+            Message::Close(_) => break,
             _ => {}
         }
     }
+
+    for (_, task) in attachments.lock().await.drain() {
+        task.abort();
+    }
 }
 
-/// Dispatch an authenticated client message to the appropriate handler.
-async fn dispatch_message(
+async fn authenticate(
     state: &AppState,
-    sender: &Arc<Mutex<futures::stream::SplitSink<WebSocket, Message>>>,
-    msg: ClientMessage,
-) -> Result<(), anyhow::Error> {
-    match msg {
-        ClientMessage::CreateWorkspace { request_id, name, env, agent_config } => {
-            let request = CreateWorkspaceRequest {
-                name,
-                env,
-                agent_config,
-            };
-            match state.workspace_manager.create_workspace(request).await {
-                Ok(workspace) => {
-                    let response = ServerMessage::WorkspaceCreated {
-                        request_id,
-                        workspace,
-                    };
-                    let _ = send_message(sender, &response).await;
-                }
-                Err(e) => {
-                    let _ = send_error(sender, Some(&request_id), "INTERNAL_ERROR", &e.to_string()).await;
-                }
-            }
-        }
-
-        ClientMessage::ListWorkspaces { request_id } => {
-            let workspaces = state.workspace_manager.list_workspaces().await;
-            let response = ServerMessage::WorkspaceList {
-                request_id,
-                workspaces,
-            };
-            let _ = send_message(sender, &response).await;
-        }
-
-        ClientMessage::GetWorkspace { request_id, workspace_id } => {
-            match state.workspace_manager.get_workspace(&workspace_id).await {
-                Some(_workspace) => {
-                    // For now, return via list; in Phase 1, add dedicated response
-                    let workspaces = state.workspace_manager.list_workspaces().await;
-                    let response = ServerMessage::WorkspaceList {
-                        request_id,
-                        workspaces,
-                    };
-                    let _ = send_message(sender, &response).await;
-                }
-                None => {
-                    let _ = send_error(sender, Some(&request_id), "WORKSPACE_NOT_FOUND", "Workspace not found").await;
-                }
-            }
-        }
-
-        ClientMessage::DestroyWorkspace { request_id, workspace_id } => {
-            match state.workspace_manager.destroy_workspace(&workspace_id).await {
-                Ok(true) => {
-                    let response = ServerMessage::WorkspaceDestroyed { workspace_id };
-                    let _ = send_message(sender, &response).await;
-                }
-                Ok(false) => {
-                    let _ = send_error(sender, Some(&request_id), "WORKSPACE_NOT_FOUND", "Workspace not found").await;
-                }
-                Err(e) => {
-                    let _ = send_error(sender, Some(&request_id), "INTERNAL_ERROR", &e.to_string()).await;
-                }
-            }
-        }
-
-        ClientMessage::UpdateWorkspace { request_id, workspace_id, name, env, agent_config } => {
-            let request = kumokara_protocol::workspace::UpdateWorkspaceRequest {
-                name,
-                env,
-                agent_config,
-            };
-            match state.workspace_manager.update_workspace(&workspace_id, request).await {
-                Ok(Some(workspace)) => {
-                    let response = ServerMessage::WorkspaceUpdated {
-                        workspace_id,
-                        workspace,
-                    };
-                    let _ = send_message(sender, &response).await;
-                }
-                Ok(None) => {
-                    let _ = send_error(sender, Some(&request_id), "WORKSPACE_NOT_FOUND", "Workspace not found").await;
-                }
-                Err(e) => {
-                    let _ = send_error(sender, Some(&request_id), "INTERNAL_ERROR", &e.to_string()).await;
-                }
-            }
-        }
-
-        // --- Session management ---
-        ClientMessage::SessionCreate { request_id, workspace_id, session_type, cols, rows } => {
-            let session_id = uuid::Uuid::new_v4().to_string();
-            let title = match session_type.as_str() {
-                "agent" => "agent",
-                _ => "shell",
-            };
-            let session_info = kumokara_protocol::workspace::SessionInfo {
-                id: session_id.clone(),
-                workspace_id: workspace_id.clone(),
-                session_type: session_type.clone(),
-                agent: None,
-                title: title.to_string(),
-                state: "active".to_string(),
-                created_at: chrono::Utc::now().to_rfc3339(),
-                last_active_at: chrono::Utc::now().to_rfc3339(),
-                cols,
-                rows,
-            };
-
-            // Spawn a real PTY for this session
-            let spawn_result = state.session_registry.create_shell_session(
-                &session_id,
-                cols,
-                rows,
-                sender.clone(),
-            ).await;
-
-            match spawn_result {
-                Ok(()) => {
-                    let response = ServerMessage::SessionCreated {
-                        request_id,
-                        workspace_id,
-                        session: session_info,
-                    };
-                    let _ = send_message(sender, &response).await;
-                }
-                Err(e) => {
-                    let _ = send_error(sender, Some(&request_id), "INTERNAL_ERROR", &e.to_string()).await;
-                }
-            }
-        }
-
-        ClientMessage::SessionList { request_id, workspace_id: _ } => {
-            // Phase 0: return empty list (sessions tracked in registry, not workspace manager)
-            let response = ServerMessage::SessionList {
-                request_id,
-                sessions: vec![],
-            };
-            let _ = send_message(sender, &response).await;
-        }
-
-        ClientMessage::TerminalInput { session_id, data } => {
-            // Decode base64 input and forward to PTY
-            use base64::Engine;
-            if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&data) {
-                let _ = state.session_registry.write_input(&session_id, &bytes).await;
-            }
-        }
-
-        ClientMessage::TerminalResize { session_id, cols, rows } => {
-            let _ = state.session_registry.resize(&session_id, cols, rows).await;
-        }
-
-        ClientMessage::SessionDestroy { request_id, session_id } => {
-            state.session_registry.remove(&session_id).await;
-            let response = ServerMessage::SessionDestroyed { session_id };
-            let _ = send_message(sender, &response).await;
-            // Echo request_id back via the type system isn't needed since SessionDestroyed doesn't have request_id
-            // The client matches on the session_id
-            drop(request_id);
-        }
-
-        _ => {
-            // Unhandled message types in Phase 0
-            let _ = send_error(
-                sender,
-                None,
-                "INTERNAL_ERROR",
-                "Message type not yet implemented in Phase 0",
-            )
-            .await;
-        }
+    sender: &WsSender,
+    message: &ClientMessage,
+) -> Result<(), ()> {
+    let ClientMessage::Auth { token } = message else {
+        let _ = send_auth_error(sender, "Send an auth message first").await;
+        return Err(());
+    };
+    if !state.auth_manager.validate_token(token) {
+        let _ = send_auth_error(sender, "Invalid authentication token").await;
+        return Err(());
     }
 
+    send_message(
+        sender,
+        &ServerMessage::AuthOk {
+            server_version: state.version.clone(),
+        },
+    )
+    .await
+    .map_err(|_| ())
+}
+
+async fn handle_binary_input(state: &AppState, sender: &WsSender, data: &[u8]) {
+    if data.len() < 24 {
+        let _ = send_error(
+            sender,
+            None,
+            "INVALID_MESSAGE",
+            "Binary frame is shorter than 24 bytes",
+        )
+        .await;
+        return;
+    }
+    let Ok(session_id) = uuid::Uuid::from_slice(&data[..16]) else {
+        let _ = send_error(sender, None, "INVALID_MESSAGE", "Invalid session UUID").await;
+        return;
+    };
+    if let Err(error) = state
+        .session_registry
+        .write_input(&session_id.to_string(), &data[24..])
+        .await
+    {
+        let _ = send_error(sender, None, "SESSION_NOT_FOUND", &error.to_string()).await;
+    }
+}
+
+async fn dispatch(
+    state: &AppState,
+    sender: &WsSender,
+    attachments: &AttachmentTasks,
+    message: ClientMessage,
+) -> anyhow::Result<()> {
+    match message {
+        ClientMessage::Auth { .. } => {
+            send_error(
+                sender,
+                None,
+                "INVALID_MESSAGE",
+                "Connection is already authenticated",
+            )
+            .await?;
+        }
+        ClientMessage::SessionCreate {
+            request_id,
+            cwd,
+            cols,
+            rows,
+        } => {
+            let cwd = cwd.map(PathBuf::from).unwrap_or(std::env::current_dir()?);
+            match state
+                .session_registry
+                .create_shell_session(cwd, cols, rows)
+                .await
+            {
+                Ok(session) => {
+                    send_message(
+                        sender,
+                        &ServerMessage::SessionCreated {
+                            request_id,
+                            session,
+                        },
+                    )
+                    .await?;
+                }
+                Err(error) => {
+                    send_error(
+                        sender,
+                        Some(&request_id),
+                        "SESSION_CREATE_FAILED",
+                        &error.to_string(),
+                    )
+                    .await?;
+                }
+            }
+        }
+        ClientMessage::SessionList { request_id } => {
+            send_message(
+                sender,
+                &ServerMessage::SessionList {
+                    request_id,
+                    sessions: state.session_registry.list().await,
+                },
+            )
+            .await?;
+        }
+        ClientMessage::SessionAttach {
+            request_id,
+            session_id,
+            last_seq,
+        } => {
+            stop_attachment(attachments, &session_id).await;
+            match attach_output(state, sender, &session_id, last_seq).await {
+                Ok(task) => {
+                    attachments.lock().await.insert(session_id, task);
+                }
+                Err(error) => {
+                    send_error(
+                        sender,
+                        Some(&request_id),
+                        "SESSION_NOT_FOUND",
+                        &error.to_string(),
+                    )
+                    .await?;
+                }
+            }
+        }
+        ClientMessage::SessionDetach { session_id } => {
+            stop_attachment(attachments, &session_id).await;
+        }
+        ClientMessage::SessionDestroy {
+            request_id,
+            session_id,
+        } => {
+            stop_attachment(attachments, &session_id).await;
+            if state.session_registry.remove(&session_id).await {
+                send_message(sender, &ServerMessage::SessionDestroyed { session_id }).await?;
+            } else {
+                send_error(
+                    sender,
+                    Some(&request_id),
+                    "SESSION_NOT_FOUND",
+                    "Session not found",
+                )
+                .await?;
+            }
+        }
+        ClientMessage::TerminalInput {
+            session_id,
+            data_base64,
+        } => {
+            use base64::Engine;
+            match base64::engine::general_purpose::STANDARD.decode(data_base64) {
+                Ok(data) => {
+                    if let Err(error) = state.session_registry.write_input(&session_id, &data).await
+                    {
+                        send_error(sender, None, "SESSION_NOT_FOUND", &error.to_string()).await?;
+                    }
+                }
+                Err(error) => {
+                    send_error(sender, None, "INVALID_MESSAGE", &error.to_string()).await?;
+                }
+            }
+        }
+        ClientMessage::TerminalResize {
+            session_id,
+            cols,
+            rows,
+        } => {
+            if let Err(error) = state.session_registry.resize(&session_id, cols, rows).await {
+                send_error(sender, None, "SESSION_RESIZE_FAILED", &error.to_string()).await?;
+            }
+        }
+    }
     Ok(())
 }
 
-/// Send a JSON message to the client.
-async fn send_message(
-    sender: &Arc<Mutex<futures::stream::SplitSink<WebSocket, Message>>>,
-    msg: &ServerMessage,
-) -> Result<(), anyhow::Error> {
-    let json = serde_json::to_string(msg)?;
+async fn stop_attachment(attachments: &AttachmentTasks, session_id: &str) {
+    if let Some(task) = attachments.lock().await.remove(session_id) {
+        task.abort();
+    }
+}
+
+async fn attach_output(
+    state: &AppState,
+    sender: &WsSender,
+    session_id: &str,
+    last_seq: Option<u64>,
+) -> anyhow::Result<tokio::task::JoinHandle<()>> {
+    let mut attachment = state.session_registry.attach(session_id, last_seq).await?;
+
+    if attachment.gap_detected {
+        send_message(
+            sender,
+            &ServerMessage::ServerNotification {
+                message: format!("Output history for session {session_id} is incomplete"),
+            },
+        )
+        .await?;
+    }
+    for chunk in attachment.replay {
+        send_terminal_output(sender, chunk).await?;
+    }
+
+    let sender = sender.clone();
+    Ok(tokio::spawn(async move {
+        loop {
+            match attachment.live.recv().await {
+                Ok(chunk) if chunk.seq >= attachment.live_from_seq => {
+                    if send_terminal_output(&sender, chunk).await.is_err() {
+                        break;
+                    }
+                }
+                Ok(_) => {}
+                Err(broadcast::error::RecvError::Lagged(_)) => {
+                    let _ = send_message(
+                        &sender,
+                        &ServerMessage::ServerNotification {
+                            message: "Terminal output lagged; reattach to recover history"
+                                .to_string(),
+                        },
+                    )
+                    .await;
+                    break;
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    }))
+}
+
+async fn send_terminal_output(sender: &WsSender, chunk: TerminalChunk) -> anyhow::Result<()> {
+    use base64::Engine;
+    send_message(
+        sender,
+        &ServerMessage::TerminalOutput {
+            session_id: chunk.session_id,
+            seq: chunk.seq,
+            data_base64: base64::engine::general_purpose::STANDARD.encode(chunk.data),
+        },
+    )
+    .await
+}
+
+async fn send_message(sender: &WsSender, message: &ServerMessage) -> anyhow::Result<()> {
+    let json = serde_json::to_string(message)?;
     sender.lock().await.send(Message::Text(json.into())).await?;
     Ok(())
 }
 
-/// Send an error message to the client.
+async fn send_auth_error(sender: &WsSender, message: &str) -> anyhow::Result<()> {
+    send_message(
+        sender,
+        &ServerMessage::AuthError {
+            code: "AUTH_INVALID".to_string(),
+            message: message.to_string(),
+        },
+    )
+    .await
+}
+
 async fn send_error(
-    sender: &Arc<Mutex<futures::stream::SplitSink<WebSocket, Message>>>,
+    sender: &WsSender,
     request_id: Option<&str>,
     code: &str,
     message: &str,
-) -> Result<(), anyhow::Error> {
-    let msg = ServerMessage::Error {
-        request_id: request_id.map(|s| s.to_string()),
-        code: code.to_string(),
-        message: message.to_string(),
-    };
-    let json = serde_json::to_string(&msg)?;
-    sender.lock().await.send(Message::Text(json.into())).await?;
-    Ok(())
+) -> anyhow::Result<()> {
+    send_message(
+        sender,
+        &ServerMessage::Error {
+            request_id: request_id.map(str::to_string),
+            code: code.to_string(),
+            message: message.to_string(),
+        },
+    )
+    .await
 }

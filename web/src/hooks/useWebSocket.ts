@@ -1,145 +1,122 @@
-import { useEffect, useRef } from 'react'
-import { useWorkspaceStore } from '../store/workspaceStore'
+import { useCallback, useEffect, useRef } from 'react'
+import type { ClientMessage, ServerMessage } from '../protocol'
+import { useSessionStore } from '../store/sessionStore'
 
-// Callback type for terminal output
-export type TerminalOutputHandler = (sessionId: string, data: string) => void
+export type TerminalOutputHandler = (sessionId: string, seq: number, data: Uint8Array) => void
 
 const terminalHandlers = new Set<TerminalOutputHandler>()
 
 export function onTerminalOutput(handler: TerminalOutputHandler) {
   terminalHandlers.add(handler)
-  return () => { terminalHandlers.delete(handler) }
+  return () => terminalHandlers.delete(handler)
 }
 
 export function useWebSocket() {
-  const wsRef = useRef<WebSocket | null>(null)
-  const authToken = useWorkspaceStore((s) => s.authToken)
-  const setConnected = useWorkspaceStore((s) => s.setConnected)
-  const setWorkspaces = useWorkspaceStore((s) => s.setWorkspaces)
-  const setWs = useWorkspaceStore((s) => s.setWs)
-  const setAuthState = useWorkspaceStore((s) => s.setAuthState)
-  const setAuthError = useWorkspaceStore((s) => s.setAuthError)
-  const addSession = useWorkspaceStore((s) => s.addSession)
-  const removeSession = useWorkspaceStore((s) => s.removeSession)
-
-  const connect = () => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) return
-
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const host = window.location.host
-    const ws = new WebSocket(`${protocol}//${host}/api/ws`)
-
-    ws.onopen = () => {
-      console.log('WebSocket connected, sending auth...')
-      if (authToken) {
-        ws.send(JSON.stringify({ type: 'auth', token: authToken }))
-      }
-    }
-
-    ws.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data)
-        handleMessage(msg)
-      } catch (_e) {
-        // Binary frame — not used in Phase 0
-      }
-    }
-
-    ws.onclose = (event) => {
-      console.log('WebSocket disconnected, code:', event.code)
-      setConnected(false)
-      setWs(null)
-      // Only auto-reconnect if already authenticated
-      if (useWorkspaceStore.getState().authState === 'authenticated') {
-        setTimeout(connect, 3000)
-      }
-    }
-
-    ws.onerror = (_e) => {
-      // onclose will fire after this
-    }
-
-    wsRef.current = ws
-    setWs(ws)
-  }
-
-  const handleMessage = (msg: any) => {
-    switch (msg.type) {
-      case 'auth_ok':
-        console.log('Auth succeeded')
-        setConnected(true)
-        setAuthState('authenticated')
-        // Request workspace list after successful auth
-        wsRef.current?.send(
-          JSON.stringify({ type: 'list_workspaces', request_id: crypto.randomUUID() })
-        )
-        break
-
-      case 'auth_error':
-        console.error('Auth failed:', msg.message)
-        setAuthError(msg.message || 'Authentication failed')
-        setConnected(false)
-        // Close the WebSocket — it's useless without auth
-        wsRef.current?.close()
-        wsRef.current = null
-        setWs(null)
-        break
-
-      case 'workspace_list':
-        setWorkspaces(msg.workspaces || [])
-        break
-
-      case 'workspace_created':
-        useWorkspaceStore.getState().addWorkspace(msg.workspace)
-        break
-
-      case 'workspace_destroyed':
-        wsRef.current?.send(
-          JSON.stringify({ type: 'list_workspaces', request_id: crypto.randomUUID() })
-        )
-        break
-
-      case 'session_created':
-        addSession(msg.workspace_id, msg.session)
-        break
-
-      case 'session_destroyed':
-        removeSession(msg.session_id)
-        break
-
-      case 'terminal_output': {
-        const sessionId = msg.session_id
-        const data = msg.data
-        terminalHandlers.forEach((h) => {
-          try { h(sessionId, data) } catch (_) { /* ignore */ }
-        })
-        break
-      }
-
-      case 'session_list':
-        break
-
-      default:
-        break
-    }
-  }
-
-  const send = (msg: object) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify(msg))
-      return true
-    }
-    return false
-  }
+  const socketRef = useRef<WebSocket | null>(null)
+  const reconnectRef = useRef<number | null>(null)
+  const refreshRef = useRef<number | null>(null)
+  const authToken = useSessionStore((state) => state.authToken)
 
   useEffect(() => {
-    if (authToken) {
-      connect()
+    if (!authToken) return
+    let disposed = false
+
+    const clearTimers = () => {
+      if (reconnectRef.current !== null) window.clearTimeout(reconnectRef.current)
+      if (refreshRef.current !== null) window.clearInterval(refreshRef.current)
+      reconnectRef.current = null
+      refreshRef.current = null
     }
+
+    const requestSessions = () => {
+      if (socketRef.current?.readyState === WebSocket.OPEN) {
+        socketRef.current.send(JSON.stringify({
+          type: 'session_list',
+          request_id: crypto.randomUUID(),
+        } satisfies ClientMessage))
+      }
+    }
+
+    const handleMessage = (message: ServerMessage) => {
+      const store = useSessionStore.getState()
+      switch (message.type) {
+        case 'auth_ok':
+          store.setConnected(true)
+          store.setAuthState('authenticated')
+          store.setWs(socketRef.current)
+          requestSessions()
+          refreshRef.current = window.setInterval(requestSessions, 2500)
+          break
+        case 'auth_error':
+          store.setAuthError(message.message || 'Authentication failed')
+          socketRef.current?.close()
+          break
+        case 'session_created':
+          store.addSession(message.session)
+          break
+        case 'session_destroyed':
+          store.removeSession(message.session_id)
+          break
+        case 'session_list':
+          store.setSessions(message.sessions)
+          break
+        case 'terminal_output':
+          const bytes = Uint8Array.from(atob(message.data_base64), (character) => character.charCodeAt(0))
+          terminalHandlers.forEach((handler) => {
+            try { handler(message.session_id, message.seq, bytes) } catch { /* isolate UI handlers */ }
+          })
+          break
+        case 'error':
+          console.warn(`[${message.code}] ${message.message}`)
+          break
+        case 'server_notification':
+          console.info(message.message)
+          break
+      }
+    }
+
+    const connect = () => {
+      if (disposed) return
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+      const socket = new WebSocket(`${protocol}//${window.location.host}/api/ws`)
+      socketRef.current = socket
+
+      socket.onopen = () => socket.send(JSON.stringify({ type: 'auth', token: authToken } satisfies ClientMessage))
+      socket.onmessage = (event) => {
+        if (typeof event.data !== 'string') return
+        try {
+          handleMessage(JSON.parse(event.data) as ServerMessage)
+        } catch (error) {
+          console.warn('Invalid server message', error)
+        }
+      }
+      socket.onclose = () => {
+        const store = useSessionStore.getState()
+        store.setConnected(false)
+        store.setWs(null)
+        if (refreshRef.current !== null) window.clearInterval(refreshRef.current)
+        refreshRef.current = null
+        if (!disposed && store.authState !== 'error') {
+          reconnectRef.current = window.setTimeout(connect, 3000)
+        }
+      }
+    }
+
+    connect()
     return () => {
-      wsRef.current?.close()
+      disposed = true
+      clearTimers()
+      const socket = socketRef.current
+      socketRef.current = null
+      socket?.close()
     }
   }, [authToken])
+
+  const send = useCallback((message: ClientMessage) => {
+    if (socketRef.current?.readyState !== WebSocket.OPEN) return false
+    socketRef.current.send(JSON.stringify(message))
+    return true
+  }, [])
 
   return { send }
 }

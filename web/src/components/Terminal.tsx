@@ -1,22 +1,21 @@
-import React, { useEffect, useRef } from 'react'
+import { useEffect, useRef } from 'react'
 import { Terminal as XTerm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import { onTerminalOutput } from '../hooks/useWebSocket'
-import { useWorkspaceStore } from '../store/workspaceStore'
+import { useSessionStore } from '../store/sessionStore'
 
 interface Props {
-  sessionId: string | null
+  sessionId: string
 }
 
-export const Terminal: React.FC<Props> = ({ sessionId }) => {
+export function Terminal({ sessionId }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const xtermRef = useRef<XTerm | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
   const sessionIdRef = useRef<string | null>(sessionId)
-  const ws = useWorkspaceStore((s) => s.ws)
+  const ws = useSessionStore((s) => s.ws)
 
-  // Keep sessionIdRef in sync
   sessionIdRef.current = sessionId
 
   useEffect(() => {
@@ -27,25 +26,12 @@ export const Terminal: React.FC<Props> = ({ sessionId }) => {
       fontSize: 14,
       fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
       theme: {
-        background: '#1a1a2e',
-        foreground: '#e0e0e0',
-        cursor: '#00E5FF',
-        selectionBackground: '#00E5FF40',
-        black: '#1a1a2e',
-        red: '#FF5252',
-        green: '#69F0AE',
-        yellow: '#FFD600',
-        blue: '#40C4FF',
-        magenta: '#FF4081',
-        cyan: '#00E5FF',
-        white: '#e0e0e0',
-        brightBlack: '#666',
-        brightRed: '#FF8A80',
-        brightGreen: '#B9F6CA',
-        brightYellow: '#FFFF00',
-        brightBlue: '#80D8FF',
-        brightMagenta: '#FF80AB',
-        brightCyan: '#84FFFF',
+        background: '#0b101b', foreground: '#dce4f5', cursor: '#86eaff',
+        selectionBackground: '#86eaff33', black: '#111827', red: '#ff7d86',
+        green: '#75d99f', yellow: '#e8c66a', blue: '#77bdfb', magenta: '#c49aff',
+        cyan: '#86eaff', white: '#dce4f5', brightBlack: '#65718a',
+        brightRed: '#ff9ba2', brightGreen: '#9ee8ba', brightYellow: '#f2d98e',
+        brightBlue: '#9bd0ff', brightMagenta: '#d7b7ff', brightCyan: '#b5f3ff',
         brightWhite: '#ffffff',
       },
     })
@@ -58,28 +44,32 @@ export const Terminal: React.FC<Props> = ({ sessionId }) => {
     xtermRef.current = term
     fitAddonRef.current = fitAddon
 
-    // Write welcome message
-    term.writeln('\x1b[1;36m☁ Kumokara（雲殻）— Agents never sleep in Kumokara.\x1b[0m')
-    term.writeln('')
-    term.writeln('Select a workspace and create a session to start.')
-    term.writeln('')
+    const sendResize = () => {
+      fitAddon.fit()
+      const currentWs = useSessionStore.getState().ws
+      const currentSid = sessionIdRef.current
+      if (currentWs?.readyState === WebSocket.OPEN && currentSid) {
+        currentWs.send(JSON.stringify({
+          type: 'terminal_resize',
+          session_id: currentSid,
+          cols: term.cols,
+          rows: term.rows,
+        }))
+      }
+    }
+    const resizeObserver = new ResizeObserver(sendResize)
+    resizeObserver.observe(containerRef.current)
 
-    const handleResize = () => fitAddon.fit()
-    window.addEventListener('resize', handleResize)
-
-    // Listen for terminal output from the server
-    const unsub = onTerminalOutput((sid, data) => {
+    const unsub = onTerminalOutput((sid, _seq, data) => {
       if (sid === sessionIdRef.current && xtermRef.current) {
         xtermRef.current.write(data)
       }
     })
 
-    // Send typed input to the server via WebSocket
     const handleData = (data: string) => {
-      const currentWs = ws
+      const currentWs = useSessionStore.getState().ws
       const currentSid = sessionIdRef.current
       if (currentWs && currentSid && currentWs.readyState === WebSocket.OPEN) {
-        // Encode input as base64
         const encoder = new TextEncoder()
         const bytes = encoder.encode(data)
         let binary = ''
@@ -90,39 +80,48 @@ export const Terminal: React.FC<Props> = ({ sessionId }) => {
         currentWs.send(JSON.stringify({
           type: 'terminal_input',
           session_id: currentSid,
-          data: base64,
+          data_base64: base64,
         }))
       }
     }
 
-    term.onData(handleData)
+    const inputSubscription = term.onData(handleData)
 
     return () => {
-      window.removeEventListener('resize', handleResize)
+      resizeObserver.disconnect()
       unsub()
+      inputSubscription.dispose()
       term.dispose()
     }
-  }, []) // mount once
+  }, [])
 
-  // Update terminal when session changes
   useEffect(() => {
-    if (sessionId && xtermRef.current) {
+    if (sessionId && xtermRef.current && ws?.readyState === WebSocket.OPEN) {
       xtermRef.current.clear()
-      xtermRef.current.writeln(`\x1b[1;36mConnected to session: ${sessionId.slice(0, 8)}...\x1b[0m`)
-      xtermRef.current.writeln('')
+      ws.send(JSON.stringify({
+        type: 'session_attach',
+        request_id: crypto.randomUUID(),
+        session_id: sessionId,
+      }))
+      fitAddonRef.current?.fit()
+      ws.send(JSON.stringify({
+        type: 'terminal_resize',
+        session_id: sessionId,
+        cols: xtermRef.current.cols,
+        rows: xtermRef.current.rows,
+      }))
+      return () => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({
+            type: 'session_detach',
+            session_id: sessionId,
+          }))
+        }
+      }
     }
-    // Resize on session change
-    setTimeout(() => fitAddonRef.current?.fit(), 100)
-  }, [sessionId])
+  }, [sessionId, ws])
 
   return (
-    <div
-      ref={containerRef}
-      style={{
-        flex: 1,
-        overflow: 'hidden',
-        padding: '4px',
-      }}
-    />
+    <div className="terminal" ref={containerRef} />
   )
 }

@@ -6,34 +6,42 @@
 
 use anyhow::Result;
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
-use super::{PtyBackend, PtySession};
+use super::PtySession;
 
 /// Spawn a new shell session using portable-pty.
-pub async fn spawn_portable(
+pub(crate) async fn spawn(
     cwd: PathBuf,
     cols: u16,
     rows: u16,
     command: Option<Vec<String>>,
+    env: HashMap<String, String>,
 ) -> Result<PtySession> {
     let pty_system = NativePtySystem::default();
 
     // Build the command
-    let mut cmd = CommandBuilder::new_default_prog();
-    cmd.cwd(cwd.clone());
-
-    if let Some(args) = command {
-        if !args.is_empty() {
-            cmd.arg(args.join(" "));
+    let mut cmd = match command {
+        Some(args) if !args.is_empty() => {
+            let mut command = CommandBuilder::new(&args[0]);
+            for arg in &args[1..] {
+                command.arg(arg);
+            }
+            command
         }
-    }
+        _ => CommandBuilder::new_default_prog(),
+    };
+    cmd.cwd(cwd.clone());
 
     // Set environment
     cmd.env("TERM", "xterm-256color");
+    for (key, value) in env {
+        cmd.env(key, value);
+    }
 
     // Spawn the PTY
     let pair = pty_system
@@ -43,25 +51,24 @@ pub async fn spawn_portable(
             pixel_width: 0,
             pixel_height: 0,
         })
-        .map_err(|e| anyhow::anyhow!("Failed to open PTY: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Failed to open PTY: {e}"))?;
 
     let child = pair
         .slave
         .spawn_command(cmd)
-        .map_err(|e| anyhow::anyhow!("Failed to spawn command in PTY: {}", e))?;
-
-    let session_id = uuid::Uuid::new_v4().to_string();
+        .map_err(|e| anyhow::anyhow!("Failed to spawn command in PTY: {e}"))?;
+    let process_id = child.process_id();
 
     // Get reader and writer handles (portable-pty 0.9 API)
     let mut reader: Box<dyn Read + Send> = pair
         .master
         .try_clone_reader()
-        .map_err(|e| anyhow::anyhow!("Failed to clone PTY reader: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Failed to clone PTY reader: {e}"))?;
 
     let mut writer: Box<dyn Write + Send> = pair
         .master
         .take_writer()
-        .map_err(|e| anyhow::anyhow!("Failed to take PTY writer: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Failed to take PTY writer: {e}"))?;
 
     // We keep the master around for resize operations
     let master = Arc::new(Mutex::new(pair.master));
@@ -117,15 +124,11 @@ pub async fn spawn_portable(
     let child_for_cleanup = child.clone();
 
     let session = PtySession {
-        id: session_id,
-        backend: PtyBackend::Portable,
-        cwd,
-        cols,
-        rows,
-        output_rx,
-        input_tx: Some(input_tx),
-        resize_tx: Some(resize_tx),
-        _cleanup: Some(Box::new(move || {
+        process_id,
+        output_rx: Some(output_rx),
+        input_tx,
+        resize_tx,
+        cleanup: Some(Box::new(move || {
             if let Ok(mut guard) = child_for_cleanup.lock() {
                 if let Some(mut child) = guard.take() {
                     let _ = child.kill();

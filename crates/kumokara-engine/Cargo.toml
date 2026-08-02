@@ -9,7 +9,3 @@ tokio.workspace = true
 portable-pty.workspace = true
 tracing.workspace = true
 anyhow.workspace = true
-thiserror.workspace = true
-uuid.workspace = true
-bytes.workspace = true
-futures.workspace = true

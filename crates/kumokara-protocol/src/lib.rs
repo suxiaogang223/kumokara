@@ -1,8 +1,8 @@
-//! Kumokara Protocol — shared types for WebSocket messages, workspace info, and events.
+//! Wire types shared by the Kumokara server and its clients.
 //!
-//! This crate defines the wire format and shared data structures used between
-//! the Kumokara server and all clients (web, CLI, future Tauri app).
+//! The protocol intentionally exposes only authentication, terminal sessions,
+//! and terminal I/O. Working directories and agents are properties discovered
+//! from sessions rather than separate lifecycle objects.
 
-pub mod event;
 pub mod messages;
-pub mod workspace;
+pub mod session;
