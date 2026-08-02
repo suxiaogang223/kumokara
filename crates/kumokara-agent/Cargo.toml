@@ -1,0 +1,13 @@
+[package]
+name = "kumokara-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+kumokara-protocol.workspace = true
+tokio.workspace = true
+async-trait = "0.1"
+tracing.workspace = true
+anyhow.workspace = true
+dirs.workspace = true

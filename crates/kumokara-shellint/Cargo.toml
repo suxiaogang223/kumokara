@@ -1,0 +1,10 @@
+[package]
+name = "kumokara-shellint"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+kumokara-protocol.workspace = true
+tracing.workspace = true
+thiserror.workspace = true

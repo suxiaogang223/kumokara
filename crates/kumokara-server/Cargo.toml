@@ -1,0 +1,33 @@
+[package]
+name = "kumokara-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+kumokara-protocol.workspace = true
+kumokara-engine.workspace = true
+kumokara-shellint.workspace = true
+kumokara-event.workspace = true
+kumokara-workspace.workspace = true
+kumokara-auth.workspace = true
+kumokara-agent.workspace = true
+axum.workspace = true
+axum-extra.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+futures.workspace = true
+bytes.workspace = true
+base64 = "0.22"
+
+[dev-dependencies]
+reqwest = { version = "0.12", features = ["json"] }
+tempfile = "3"
+kumokara-shellint.workspace = true

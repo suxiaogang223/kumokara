@@ -1,0 +1,23 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Node / Web
+web/node_modules/
+web/dist/
+*.tsbuildinfo
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Kumokara runtime data (local dev)
+.kumokara/
+
+# Environment
+.env
+.env.local

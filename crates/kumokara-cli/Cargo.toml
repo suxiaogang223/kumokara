@@ -1,0 +1,23 @@
+[package]
+name = "kumokara-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+default-run = "kumokara"
+
+[[bin]]
+name = "kumokara"
+path = "src/main.rs"
+
+[dependencies]
+kumokara-server.workspace = true
+kumokara-engine.workspace = true
+kumokara-workspace.workspace = true
+kumokara-auth.workspace = true
+clap.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+dirs.workspace = true
+serde_yaml.workspace = true

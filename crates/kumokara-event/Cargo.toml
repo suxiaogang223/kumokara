@@ -1,0 +1,21 @@
+[package]
+name = "kumokara-event"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+kumokara-protocol.workspace = true
+tokio.workspace = true
+sqlx.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+ringbuf.workspace = true
+bytes.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
