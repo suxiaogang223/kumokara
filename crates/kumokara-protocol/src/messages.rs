@@ -3,7 +3,7 @@
 //! Terminal input may also use binary frames with a 24-byte header:
 //! a 16-byte session UUID, an 8-byte sequence number, then raw input bytes.
 
-use crate::session::SessionInfo;
+use crate::session::{AgentStatus, SessionInfo};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,11 +40,35 @@ pub enum ClientMessage {
     TerminalInput {
         session_id: String,
         data_base64: String,
+        #[serde(default)]
+        cols: Option<u16>,
+        #[serde(default)]
+        rows: Option<u16>,
     },
     TerminalResize {
         session_id: String,
         cols: u16,
         rows: u16,
+        #[serde(default)]
+        active: bool,
+    },
+    TerminalTitle {
+        session_id: String,
+        title: String,
+    },
+    AgentUpdate {
+        session_id: String,
+        code_agent: String,
+        #[serde(default)]
+        session_title: Option<String>,
+        #[serde(default)]
+        status: Option<AgentStatus>,
+        #[serde(default)]
+        detail: Option<String>,
+        #[serde(default)]
+        mode: Option<String>,
+        #[serde(default)]
+        task_progress: Option<String>,
     },
 }
 
@@ -68,7 +92,7 @@ pub enum ServerMessage {
     },
     SessionCreated {
         request_id: String,
-        session: SessionInfo,
+        session: Box<SessionInfo>,
     },
     SessionList {
         request_id: String,

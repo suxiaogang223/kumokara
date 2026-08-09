@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/kumokara-protocol",
+    "crates/kumokara-agent",
     "crates/kumokara-engine",
     "crates/kumokara-auth",
     "crates/kumokara-server",
@@ -27,9 +28,13 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
 futures = "0.3"
+portable-pty = "0.9"
 
 # Protocol crate (minimal deps)
 kumokara-protocol = { path = "crates/kumokara-protocol" }
+
+# Agent adapter API and built-in provider plugins
+kumokara-agent = { path = "crates/kumokara-agent" }
 
 # Engine
 kumokara-engine = { path = "crates/kumokara-engine" }

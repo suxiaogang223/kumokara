@@ -27,8 +27,6 @@ Prerequisites:
 
 - Rust stable (the repository toolchain installs `rust-analyzer` automatically)
 - Node.js 20+
-- tmux 3.2+ (required runtime; for example `brew install tmux` on macOS or install
-  the `tmux` package with your Linux distribution)
 
 ```bash
 git clone https://github.com/suxiaogang223/kumokara.git
@@ -65,33 +63,44 @@ Browser attachments
         ▼
 SessionRegistry (single runtime source of truth)
         ├── SessionInfo (cwd + optional detected agent)
-        ├── TmuxSession (control connection)
+        ├── AgentAdapterRegistry (built-ins + registered plugins)
+        ├── PtySession (server-owned PTY)
         ├── bounded sequenced output history
         └── live output broadcast
 ```
 
 The browser can detach and later attach again. Attach first replays retained
 chunks, then switches to the live broadcast stream without a replay/live race.
+Each attachment fits its own xterm viewport locally. After the focused browser
+settles at a new grid size, it sends one active resize so a full-screen TUI can
+redraw to that window before the user types again. Background pages never send
+`SIGWINCH`; input still carries the foreground grid atomically as a final guard,
+while output bytes continue to be broadcast to every attachment.
+
+Tab titles follow the same layered model as Otty: standard OSC 0/2 titles from
+the running program win, OSC 26 `SessionTitle` is the agent-aware hint, then the
+registered adapter display name and cwd provide fallbacks. OSC 26 also carries
+agent status and detail without scraping terminal text.
 
 There is no Workspace lifecycle or Workspace API. Project context is simply the
 canonical working directory discovered from each shell or agent process.
 
-The Rust workspace contains five focused crates:
+The Rust workspace contains six focused crates:
 
 - `kumokara-protocol`: client/server wire types;
-- `kumokara-engine`: required tmux runtime and control-mode integration;
+- `kumokara-agent`: public adapter trait, registry, and built-in providers;
+- `kumokara-engine`: one concrete `PtySession` owning the child process, PTY I/O,
+  and ordered input/resize commands;
 - `kumokara-auth`: token generation and validation;
 - `kumokara-server`: session runtime and HTTP/WebSocket boundary;
 - `kumokara-cli`: local and daemon entry points.
 
 ## Current boundaries
 
-- Browser disconnect/reconnect is supported. tmux owns every shell in a
-  Kumokara-specific server, so processes survive server restart and the visible
-  pane is reconstructed on recovery; exact VT state and complete scrollback
-  recovery are not yet supported.
-- Startup fails with an actionable error when the required `tmux` executable is
-  missing. Session creation never silently falls back to a weaker runtime.
+- Browser disconnect/reconnect is supported. The server-owned PTY and bounded
+  output history remain alive while the Kumokara service is running.
+- Restarting the Kumokara service ends its PTY sessions. Long-lived Agent
+  context is resumed through each Agent's own persisted session mechanism.
 - Process-based agent discovery is best-effort. Provider hooks will add approval,
   task, and resume metadata without becoming a launch requirement.
 - Output replay is bounded raw terminal history, not yet a server-side terminal

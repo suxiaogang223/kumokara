@@ -2,7 +2,6 @@
 
 use futures::{SinkExt, StreamExt};
 use kumokara_auth::AuthManager;
-use kumokara_engine::tmux::Tmux;
 use kumokara_server::{serve, AppState};
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -21,14 +20,12 @@ async fn available_port() -> u16 {
 struct TestServer {
     addr: SocketAddr,
     token: Option<String>,
-    tmux: Tmux,
     task: tokio::task::JoinHandle<anyhow::Result<()>>,
 }
 
 impl Drop for TestServer {
     fn drop(&mut self) {
         self.task.abort();
-        let _ = self.tmux.kill_server();
     }
 }
 
@@ -39,19 +36,10 @@ async fn spawn_test_server(auth: Option<AuthManager>) -> TestServer {
     let token = auth
         .as_ref()
         .map(|manager| manager.server_token().to_string());
-    let tmux = Tmux::new(format!(
-        "kumokara-integration-test-{}",
-        uuid::Uuid::new_v4().simple()
-    ));
-    let state = AppState::with_tmux(auth, tmux.clone()).unwrap();
+    let state = AppState::new(auth);
     let task = tokio::spawn(serve(addr, state));
     tokio::time::sleep(Duration::from_millis(300)).await;
-    TestServer {
-        addr,
-        token,
-        tmux,
-        task,
-    }
+    TestServer { addr, token, task }
 }
 
 #[tokio::test]
@@ -63,9 +51,7 @@ async fn startup_creates_one_default_session() {
     assert_eq!(response.status(), 200);
     let body: serde_json::Value = response.json().await.unwrap();
     assert_eq!(body["status"], "ok");
-    assert!(body["tmux_version"]
-        .as_str()
-        .is_some_and(|version| version.starts_with("tmux ")));
+    assert_eq!(body["server_restart_recovery"], false);
     assert_eq!(body["auth_required"], false);
     assert_eq!(body["session_count"], 1);
 }
@@ -111,6 +97,142 @@ async fn websocket_connects_without_auth_by_default() {
         .unwrap();
     let listed = recv_until_type(&mut socket, "session_list").await;
     assert_eq!(listed["sessions"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn only_the_active_browser_viewport_resizes_the_shared_pty() {
+    let server = spawn_test_server(None).await;
+    let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{}/api/ws", server.addr))
+        .await
+        .unwrap();
+    assert_eq!(recv_json(&mut socket).await["type"], "auth_ok");
+
+    socket
+        .send(json_message(serde_json::json!({
+            "type": "session_list",
+            "request_id": "initial"
+        })))
+        .await
+        .unwrap();
+    let initial = recv_until_type(&mut socket, "session_list").await;
+    let session = &initial["sessions"][0];
+    let session_id = session["id"].as_str().unwrap();
+    assert_eq!(
+        (session["cols"].as_u64(), session["rows"].as_u64()),
+        (Some(100), Some(30))
+    );
+
+    // Legacy clients omitted `active`; keep those resize messages passive.
+    socket
+        .send(json_message(serde_json::json!({
+            "type": "terminal_resize",
+            "session_id": session_id,
+            "cols": 40,
+            "rows": 10
+        })))
+        .await
+        .unwrap();
+    socket
+        .send(json_message(serde_json::json!({
+            "type": "session_list",
+            "request_id": "after-passive-resize"
+        })))
+        .await
+        .unwrap();
+    let unchanged = recv_until_type(&mut socket, "session_list").await;
+    let unchanged = &unchanged["sessions"][0];
+    assert_eq!(
+        (unchanged["cols"].as_u64(), unchanged["rows"].as_u64()),
+        (Some(100), Some(30))
+    );
+
+    // A focused browser explicitly adopts its fitted grid, allowing a running
+    // full-screen TUI to redraw before the user types again.
+    socket
+        .send(json_message(serde_json::json!({
+            "type": "terminal_resize",
+            "session_id": session_id,
+            "cols": 120,
+            "rows": 40,
+            "active": true
+        })))
+        .await
+        .unwrap();
+    socket
+        .send(json_message(serde_json::json!({
+            "type": "session_list",
+            "request_id": "after-active-resize"
+        })))
+        .await
+        .unwrap();
+    let controlled = recv_until_type(&mut socket, "session_list").await;
+    let controlled = &controlled["sessions"][0];
+    assert_eq!(
+        (controlled["cols"].as_u64(), controlled["rows"].as_u64()),
+        (Some(120), Some(40))
+    );
+}
+
+#[tokio::test]
+async fn agent_metadata_and_terminal_title_round_trip_over_websocket() {
+    let server = spawn_test_server(None).await;
+    let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{}/api/ws", server.addr))
+        .await
+        .unwrap();
+    assert_eq!(recv_json(&mut socket).await["type"], "auth_ok");
+
+    socket
+        .send(json_message(serde_json::json!({
+            "type": "session_list",
+            "request_id": "initial"
+        })))
+        .await
+        .unwrap();
+    let initial = recv_until_type(&mut socket, "session_list").await;
+    let session_id = initial["sessions"][0]["id"].as_str().unwrap();
+
+    socket
+        .send(json_message(serde_json::json!({
+            "type": "agent_update",
+            "session_id": session_id,
+            "code_agent": "claude",
+            "session_title": "Review adapter plugins",
+            "status": "awaiting-input",
+            "detail": "approval"
+        })))
+        .await
+        .unwrap();
+    socket
+        .send(json_message(serde_json::json!({
+            "type": "session_list",
+            "request_id": "agent"
+        })))
+        .await
+        .unwrap();
+    let adapted = recv_until_type(&mut socket, "session_list").await;
+    let adapted = &adapted["sessions"][0];
+    assert_eq!(adapted["title"], "Review adapter plugins");
+    assert_eq!(adapted["agent"]["provider"], "claude_code");
+    assert_eq!(adapted["agent"]["display_name"], "Claude Code");
+    assert_eq!(adapted["agent"]["status"], "awaiting-input");
+
+    socket
+        .send(json_message(serde_json::json!({
+            "type": "terminal_title",
+            "session_id": session_id,
+            "title": "OC | Product design\u{1b}\u{7}"
+        })))
+        .await
+        .unwrap();
+    socket
+        .send(json_message(serde_json::json!({
+            "type": "session_list",
+            "request_id": "title"
+        })))
+        .await
+        .unwrap();
+    let titled = recv_until_type(&mut socket, "session_list").await;
+    assert_eq!(titled["sessions"][0]["title"], "OC | Product design");
 }
 
 #[tokio::test]

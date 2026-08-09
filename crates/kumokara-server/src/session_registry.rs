@@ -1,19 +1,18 @@
-//! Registry for tmux-owned terminal sessions.
+//! Registry for process-owned terminal sessions.
 
 use crate::output_history::OutputHistory;
 use crate::process_discovery;
 use anyhow::{bail, Context, Result};
 use chrono::Utc;
-use kumokara_engine::tmux::{PaneSnapshot, Tmux, TmuxSession};
-use kumokara_protocol::session::SessionInfo;
+use kumokara_agent::AgentAdapterRegistry;
+use kumokara_engine::PtySession;
+use kumokara_protocol::session::{AgentInfo, AgentStatus, SessionInfo};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex};
 
 const OUTPUT_CHANNEL_CAPACITY: usize = 512;
-
-/// Prefix for tmux session names created by Kumokara.
-const TMUX_SESSION_PREFIX: &str = "kumokara_";
 
 #[derive(Clone, Debug)]
 pub(crate) struct TerminalChunk {
@@ -24,15 +23,28 @@ pub(crate) struct TerminalChunk {
 
 pub struct SessionRegistry {
     sessions: Mutex<HashMap<String, SessionEntry>>,
-    tmux: Tmux,
+    agent_adapters: Arc<AgentAdapterRegistry>,
 }
 
 struct SessionEntry {
     info: SessionInfo,
-    session: TmuxSession,
+    pty: PtySession,
     history: OutputHistory,
     output_tx: broadcast::Sender<TerminalChunk>,
-    recovery_gap: bool,
+    detected_agent: Option<AgentInfo>,
+    detected_title: Option<String>,
+    reported_agent: Option<AgentInfo>,
+    agent_title: Option<String>,
+    terminal_title: Option<String>,
+}
+
+pub(crate) struct AgentUpdate {
+    pub code_agent: String,
+    pub session_title: Option<String>,
+    pub status: Option<AgentStatus>,
+    pub detail: Option<String>,
+    pub mode: Option<String>,
+    pub task_progress: Option<String>,
 }
 
 pub(crate) struct SessionAttachment {
@@ -43,18 +55,19 @@ pub(crate) struct SessionAttachment {
 }
 
 impl SessionRegistry {
-    pub fn new(tmux: Tmux) -> Self {
+    pub fn new() -> Self {
+        Self::with_agent_adapters(AgentAdapterRegistry::with_builtins())
+    }
+
+    pub fn with_agent_adapters(agent_adapters: AgentAdapterRegistry) -> Self {
         Self {
             sessions: Mutex::new(HashMap::new()),
-            tmux,
+            agent_adapters: Arc::new(agent_adapters),
         }
     }
 
     /// Spawn a shell rooted in `cwd`. The registry owns the PTY, so a browser
     /// disconnect never terminates the process.
-    ///
-    /// Every shell is created in the required, detached tmux runtime so it can
-    /// survive browser and server restarts.
     pub async fn create_shell_session(
         &self,
         cwd: PathBuf,
@@ -71,31 +84,11 @@ impl SessionRegistry {
 
         let session_id = uuid::Uuid::new_v4().to_string();
         let env = HashMap::from([("KUMOKARA_SESSION_ID".to_string(), session_id.clone())]);
-
-        let now = Utc::now().to_rfc3339();
-        let cwd_str = cwd.to_string_lossy().to_string();
-        let name = tmux_session_name(&session_id);
-        let mut session = TmuxSession::create(&self.tmux, name.clone(), cwd, cols, rows, env)?;
-        if let Err(error) =
-            persist_tmux_metadata(&self.tmux, &name, &session_id, &cwd_str, &now, cols, rows)
-        {
-            let _ = self.tmux.kill_session(&name);
-            drop(session);
-            return Err(error).context("failed to persist required tmux session metadata");
-        }
-        let initial_snapshot = capture_initial_snapshot(&self.tmux, &name).await;
-
-        let mut output_rx = session
+        let mut pty = PtySession::spawn(cwd.clone(), cols, rows, None, env)?;
+        let mut output_rx = pty
             .take_output_rx()
-            .ok_or_else(|| anyhow::anyhow!("terminal output channel missing"))?;
+            .ok_or_else(|| anyhow::anyhow!("PTY output channel missing"))?;
         let history = OutputHistory::new();
-        if let Some(snapshot) = initial_snapshot.filter(|snapshot| !snapshot.bytes.is_empty()) {
-            // The control client has also queued the prompt bytes used to
-            // produce this snapshot. Discard only those already-buffered
-            // bytes so the initial screen is not replayed twice.
-            while output_rx.try_recv().is_ok() {}
-            history.push(&snapshot.bytes);
-        }
         let output_history = history.clone();
         let (output_tx, _) = broadcast::channel(OUTPUT_CHANNEL_CAPACITY);
         let live_output = output_tx.clone();
@@ -112,10 +105,12 @@ impl SessionRegistry {
             }
         });
 
+        let now = Utc::now().to_rfc3339();
+        let cwd = cwd.to_string_lossy().to_string();
         let info = SessionInfo {
             id: session_id.clone(),
-            title: directory_name(&cwd_str),
-            cwd: cwd_str,
+            title: directory_name(&cwd),
+            cwd,
             agent: None,
             created_at: now.clone(),
             last_active_at: now,
@@ -126,122 +121,17 @@ impl SessionRegistry {
             session_id,
             SessionEntry {
                 info: info.clone(),
-                session,
+                pty,
                 history,
                 output_tx,
-                recovery_gap: false,
+                detected_agent: None,
+                detected_title: None,
+                reported_agent: None,
+                agent_title: None,
+                terminal_title: None,
             },
         );
         Ok(info)
-    }
-
-    /// Recover tmux sessions from a previous server run.
-    ///
-    /// Enumerates all tmux sessions, filters for those tagged with Kumokara
-    /// metadata (`@kumokara_session_id`), and rebuilds `SessionEntry` for
-    /// each. The visible pane is reconstructed as a replacement screen and
-    /// every attachment receives an explicit output-history gap notification.
-    pub async fn recover_sessions(&self) -> Result<Vec<SessionInfo>> {
-        let tmux = self.tmux.clone();
-        let tmux_sessions = tmux.list_sessions()?;
-        let mut recovered = Vec::new();
-
-        for name in tmux_sessions {
-            // Only look at sessions with the Kumokara prefix
-            if !name.starts_with(TMUX_SESSION_PREFIX) {
-                // Also check for metadata on non-prefixed sessions
-                // (in case user renamed or created externally)
-                let has_meta = tmux.get_session_metadata(&name, "session_id")?;
-                if has_meta.is_none() {
-                    continue;
-                }
-            }
-
-            let Some(session_id) = tmux.get_session_metadata(&name, "session_id")? else {
-                continue;
-            };
-
-            // Read stored metadata
-            let cwd = tmux
-                .get_session_metadata(&name, "cwd")?
-                .unwrap_or_else(|| "/".to_string());
-            let created_at = tmux
-                .get_session_metadata(&name, "created_at")?
-                .unwrap_or_else(|| Utc::now().to_rfc3339());
-            let cols: u16 = tmux
-                .get_session_metadata(&name, "cols")?
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(100);
-            let rows: u16 = tmux
-                .get_session_metadata(&name, "rows")?
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(30);
-
-            let mut session = TmuxSession::attach(&tmux, name.clone(), cols, rows)
-                .with_context(|| format!("failed to recover tmux session '{name}'"))?;
-
-            let mut output_rx = session
-                .take_output_rx()
-                .ok_or_else(|| anyhow::anyhow!("recovered terminal output channel missing"))?;
-            let history = OutputHistory::new();
-
-            // Reconstruct the visible screen as a standalone ANSI snapshot.
-            // Raw output sequence numbers and scrollback do not survive the
-            // server process, so every recovered attachment reports a gap.
-            match tmux.capture_visible_snapshot(&name) {
-                Ok(snapshot) if !snapshot.bytes.is_empty() => {
-                    history.push(&snapshot.bytes);
-                }
-                Ok(_) => {}
-                Err(error) => {
-                    tracing::warn!(%name, %error, "failed to capture recovered tmux screen");
-                }
-            }
-
-            let output_history = history.clone();
-            let (output_tx, _) = broadcast::channel(OUTPUT_CHANNEL_CAPACITY);
-            let live_output = output_tx.clone();
-            let output_session_id = session_id.clone();
-
-            tokio::spawn(async move {
-                while let Some(data) = output_rx.recv().await {
-                    let seq = output_history.push(&data);
-                    let _ = live_output.send(TerminalChunk {
-                        session_id: output_session_id.clone(),
-                        seq,
-                        data,
-                    });
-                }
-            });
-
-            let now = Utc::now().to_rfc3339();
-            let info = SessionInfo {
-                id: session_id.clone(),
-                title: directory_name(&cwd),
-                cwd: cwd.clone(),
-                agent: None,
-                created_at,
-                last_active_at: now,
-                cols,
-                rows,
-            };
-            self.sessions.lock().await.insert(
-                session_id,
-                SessionEntry {
-                    info: info.clone(),
-                    session,
-                    history,
-                    output_tx,
-                    recovery_gap: true,
-                },
-            );
-
-            tracing::info!(%name, session_id = %info.id, cwd = %info.cwd,
-                "recovered tmux session");
-            recovered.push(info);
-        }
-
-        Ok(recovered)
     }
 
     pub async fn list(&self) -> Vec<SessionInfo> {
@@ -252,14 +142,16 @@ impl SessionRegistry {
             .values()
             .filter_map(|entry| {
                 entry
-                    .session
+                    .pty
                     .process_id()
                     .map(|pid| (entry.info.id.clone(), pid))
             })
             .collect::<Vec<_>>();
-        let contexts = tokio::task::spawn_blocking(move || process_discovery::discover(&roots))
-            .await
-            .unwrap_or_default();
+        let adapters = Arc::clone(&self.agent_adapters);
+        let contexts =
+            tokio::task::spawn_blocking(move || process_discovery::discover(&roots, &adapters))
+                .await
+                .unwrap_or_default();
 
         let mut entries = self.sessions.lock().await;
         for context in contexts {
@@ -267,20 +159,12 @@ impl SessionRegistry {
                 if let Some(cwd) = context.cwd {
                     let cwd = cwd.to_string_lossy().to_string();
                     if entry.info.cwd != cwd {
-                        entry.info.cwd = cwd.clone();
-                        let tmux_name = entry.session.name();
-                        if let Err(error) = self.tmux.set_session_metadata(tmux_name, "cwd", &cwd) {
-                            tracing::warn!(%tmux_name, %error, "failed to update tmux cwd metadata");
-                        }
+                        entry.info.cwd = cwd;
                     }
                 }
-                entry.info.agent = context.agent;
-                entry.info.title = entry
-                    .info
-                    .agent
-                    .as_ref()
-                    .map(|agent| agent.provider.clone())
-                    .unwrap_or_else(|| directory_name(&entry.info.cwd));
+                entry.detected_agent = context.agent;
+                entry.detected_title = context.title_hint;
+                refresh_display(entry);
             }
         }
 
@@ -296,6 +180,56 @@ impl SessionRegistry {
         self.sessions.lock().await.len()
     }
 
+    pub async fn set_terminal_title(&self, session_id: &str, title: &str) -> Result<()> {
+        let mut sessions = self.sessions.lock().await;
+        let entry = sessions
+            .get_mut(session_id)
+            .ok_or_else(|| anyhow::anyhow!("session not found: {session_id}"))?;
+        entry.terminal_title = sanitized_text(title, 160);
+        refresh_display(entry);
+        Ok(())
+    }
+
+    pub(crate) async fn apply_agent_update(
+        &self,
+        session_id: &str,
+        update: AgentUpdate,
+    ) -> Result<()> {
+        let code_agent = sanitize_identifier(&update.code_agent)
+            .ok_or_else(|| anyhow::anyhow!("invalid code agent identifier"))?;
+        let presentation = self.agent_adapters.resolve(&code_agent);
+        let mut sessions = self.sessions.lock().await;
+        let entry = sessions
+            .get_mut(session_id)
+            .ok_or_else(|| anyhow::anyhow!("session not found: {session_id}"))?;
+
+        let (provider, display_name, icon) = presentation
+            .map(|agent| (agent.provider, agent.display_name, agent.icon))
+            .unwrap_or_else(|| {
+                (
+                    code_agent.clone(),
+                    humanize_identifier(&code_agent),
+                    "◆".to_string(),
+                )
+            });
+        entry.reported_agent = Some(AgentInfo {
+            provider,
+            display_name,
+            icon,
+            status: update.status,
+            detail: update.detail.and_then(|value| sanitized_text(&value, 160)),
+            mode: update.mode.and_then(|value| sanitized_text(&value, 80)),
+            task_progress: update
+                .task_progress
+                .and_then(|value| sanitized_text(&value, 32)),
+        });
+        entry.agent_title = update
+            .session_title
+            .and_then(|value| sanitized_text(&value, 160));
+        refresh_display(entry);
+        Ok(())
+    }
+
     pub(crate) async fn attach(
         &self,
         session_id: &str,
@@ -309,8 +243,7 @@ impl SessionRegistry {
         // Subscribe before taking the snapshot, then ignore already-replayed
         // live chunks. This closes the replay/live race without losing output.
         let live = entry.output_tx.subscribe();
-        let replay_after = if entry.recovery_gap { None } else { last_seq };
-        let (chunks, live_from_seq, history_gap) = entry.history.since(replay_after);
+        let (chunks, live_from_seq, gap_detected) = entry.history.since(last_seq);
         let replay = chunks
             .into_iter()
             .map(|chunk| TerminalChunk {
@@ -322,17 +255,39 @@ impl SessionRegistry {
         Ok(SessionAttachment {
             replay,
             live_from_seq,
-            gap_detected: entry.recovery_gap || history_gap,
+            gap_detected,
             live,
         })
     }
 
     pub async fn write_input(&self, session_id: &str, data: &[u8]) -> Result<()> {
+        self.write_input_at_size(session_id, data, None).await
+    }
+
+    pub async fn write_input_at_size(
+        &self,
+        session_id: &str,
+        data: &[u8],
+        size: Option<(u16, u16)>,
+    ) -> Result<()> {
+        if let Some((cols, rows)) = size {
+            validate_dimensions(cols, rows)?;
+        }
         let mut sessions = self.sessions.lock().await;
         let entry = sessions
             .get_mut(session_id)
             .ok_or_else(|| anyhow::anyhow!("session not found: {session_id}"))?;
-        entry.session.write_input(data)?;
+        if let Some((cols, rows)) = size {
+            if entry.info.cols != cols || entry.info.rows != rows {
+                // Resize and input share one ordered PTY command queue. This
+                // makes the viewport that produced the input the temporary
+                // controller without letting passive browser resizes win.
+                entry.pty.resize(cols, rows)?;
+                entry.info.cols = cols;
+                entry.info.rows = rows;
+            }
+        }
+        entry.pty.write_input(data)?;
         entry.info.last_active_at = Utc::now().to_rfc3339();
         Ok(())
     }
@@ -343,67 +298,16 @@ impl SessionRegistry {
         let entry = sessions
             .get_mut(session_id)
             .ok_or_else(|| anyhow::anyhow!("session not found: {session_id}"))?;
-        entry.session.resize(cols, rows)?;
+        entry.pty.resize(cols, rows)?;
         entry.info.cols = cols;
         entry.info.rows = rows;
-        entry.info.last_active_at = Utc::now().to_rfc3339();
-        let tmux_name = entry.session.name();
-        if let Err(error) = self
-            .tmux
-            .set_session_metadata(tmux_name, "cols", &cols.to_string())
-            .and_then(|_| {
-                self.tmux
-                    .set_session_metadata(tmux_name, "rows", &rows.to_string())
-            })
-        {
-            tracing::warn!(%tmux_name, %error, "failed to update tmux dimensions metadata");
-        }
         Ok(())
     }
 
-    /// Remove a session by killing the tmux-owned process first, then dropping
-    /// Kumokara's control connection.
+    /// Removing the entry drops the PTY and terminates its child process.
     pub async fn remove(&self, session_id: &str) -> bool {
-        let mut sessions = self.sessions.lock().await;
-        if let Some(entry) = sessions.get(session_id) {
-            let tmux_name = entry.session.name();
-            if let Err(error) = self.tmux.kill_session(tmux_name) {
-                tracing::warn!(%tmux_name, %error, "failed to kill tmux session during remove");
-            }
-        }
-        sessions.remove(session_id).is_some()
+        self.sessions.lock().await.remove(session_id).is_some()
     }
-}
-
-async fn capture_initial_snapshot(tmux: &Tmux, name: &str) -> Option<PaneSnapshot> {
-    const MAX_ATTEMPTS: usize = 80;
-    const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(25);
-
-    let mut previous = None;
-    let mut last = None;
-    for attempt in 0..MAX_ATTEMPTS {
-        match tmux.capture_visible_snapshot(name) {
-            Ok(snapshot) => {
-                let stable = snapshot.content_present
-                    && previous
-                        .as_deref()
-                        .is_some_and(|bytes| bytes == snapshot.bytes.as_slice());
-                previous = Some(snapshot.bytes.clone());
-                last = Some(snapshot);
-                if stable {
-                    break;
-                }
-            }
-            Err(error) => {
-                tracing::warn!(%name, %error, "failed to capture initial tmux screen");
-                return None;
-            }
-        }
-        if attempt + 1 < MAX_ATTEMPTS {
-            tokio::time::sleep(POLL_INTERVAL).await;
-        }
-    }
-    last
 }
 
 fn validate_dimensions(cols: u16, rows: u16) -> Result<()> {
@@ -422,39 +326,82 @@ fn directory_name(cwd: &str) -> String {
         .to_string()
 }
 
-fn tmux_session_name(session_id: &str) -> String {
-    format!("{TMUX_SESSION_PREFIX}{session_id}")
+fn refresh_display(entry: &mut SessionEntry) {
+    let reported_is_live = entry
+        .reported_agent
+        .as_ref()
+        .is_some_and(|agent| agent.status != Some(AgentStatus::Finished));
+    entry.info.agent = if reported_is_live
+        || entry
+            .reported_agent
+            .as_ref()
+            .zip(entry.detected_agent.as_ref())
+            .is_some_and(|(reported, detected)| reported.provider == detected.provider)
+    {
+        entry.reported_agent.clone()
+    } else {
+        entry.detected_agent.clone()
+    };
+    entry.info.title = entry
+        .terminal_title
+        .clone()
+        .or_else(|| entry.agent_title.clone())
+        .or_else(|| entry.detected_title.clone())
+        .or_else(|| {
+            entry
+                .info
+                .agent
+                .as_ref()
+                .map(|agent| agent.display_name.clone())
+        })
+        .unwrap_or_else(|| directory_name(&entry.info.cwd));
 }
 
-fn persist_tmux_metadata(
-    tmux: &Tmux,
-    name: &str,
-    session_id: &str,
-    cwd: &str,
-    created_at: &str,
-    cols: u16,
-    rows: u16,
-) -> Result<()> {
-    tmux.set_session_metadata(name, "session_id", session_id)?;
-    tmux.set_session_metadata(name, "cwd", cwd)?;
-    tmux.set_session_metadata(name, "created_at", created_at)?;
-    tmux.set_session_metadata(name, "cols", &cols.to_string())?;
-    tmux.set_session_metadata(name, "rows", &rows.to_string())?;
-    Ok(())
+fn sanitized_text(value: &str, max_chars: usize) -> Option<String> {
+    let value = value
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(max_chars)
+        .collect::<String>();
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_string())
+}
+
+fn sanitize_identifier(value: &str) -> Option<String> {
+    let value = value.trim().to_ascii_lowercase();
+    (!value.is_empty()
+        && value.len() <= 64
+        && value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "-_".contains(character)))
+    .then_some(value)
+}
+
+fn humanize_identifier(value: &str) -> String {
+    value
+        .split(['-', '_'])
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut characters = part.chars();
+            characters
+                .next()
+                .map(|first| first.to_uppercase().collect::<String>() + characters.as_str())
+                .unwrap_or_default()
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+impl Default for SessionRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use tokio::time::{timeout, Duration};
-
-    struct TmuxTestServer(Tmux);
-
-    impl Drop for TmuxTestServer {
-        fn drop(&mut self) {
-            let _ = self.0.kill_server();
-        }
-    }
 
     async fn wait_for_live_output(attachment: &mut SessionAttachment, expected: &str) {
         let mut observed = Vec::new();
@@ -478,10 +425,8 @@ mod tests {
 
     #[tokio::test]
     async fn session_survives_creation_and_tracks_shell_cwd() {
-        let tmux = isolated_tmux();
-        let _server = TmuxTestServer(tmux.clone());
         let temp_dir = tempfile::tempdir().unwrap();
-        let registry = SessionRegistry::new(tmux);
+        let registry = SessionRegistry::new();
         let session = registry
             .create_shell_session(temp_dir.path().to_path_buf(), 80, 24)
             .await
@@ -530,67 +475,95 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tmux_session_round_trips_input_and_survives_registry_restart() {
-        let tmux = isolated_tmux();
-        let _server = TmuxTestServer(tmux.clone());
+    async fn pty_sets_terminal_capabilities_and_round_trips_bytes() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let registry = SessionRegistry::new(tmux.clone());
+        let registry = SessionRegistry::new();
         let session = registry
             .create_shell_session(temp_dir.path().to_path_buf(), 80, 24)
             .await
             .unwrap();
-        let tmux_name = tmux_session_name(&session.id);
         let mut attachment = registry.attach(&session.id, None).await.unwrap();
 
-        assert!(attachment
-            .replay
-            .first()
-            .is_some_and(|chunk| chunk.data.starts_with(b"\x1bc")));
-
-        let command = "printf '__KUMOKARA_QUOTE__%s__UTF8__世界__ENV__%s\\n' 'hello world' \"$KUMOKARA_SESSION_ID\"\r";
+        let command = "printf '__KUMOKARA_QUOTE__%s__UTF8__世界__ENV__%s__TERM__%s__COLOR__%s__NO_COLOR__%s__CLICOLOR__%s\\n' 'hello world' \"$KUMOKARA_SESSION_ID\" \"$TERM\" \"$COLORTERM\" \"${NO_COLOR-unset}\" \"$CLICOLOR\"\r";
         registry
-            .write_input(&session.id, command.as_bytes())
+            .write_input_at_size(&session.id, command.as_bytes(), Some((96, 28)))
             .await
             .unwrap();
         wait_for_live_output(
             &mut attachment,
             &format!(
-                "__KUMOKARA_QUOTE__hello world__UTF8__世界__ENV__{}",
+                "__KUMOKARA_QUOTE__hello world__UTF8__世界__ENV__{}__TERM__xterm-256color__COLOR__truecolor__NO_COLOR__unset__CLICOLOR__1",
                 session.id
             ),
         )
         .await;
-        drop(attachment);
-        drop(registry);
-
-        assert!(tmux.session_exists(&tmux_name));
-
-        let recovered_registry = SessionRegistry::new(tmux.clone());
-        let recovered = recovered_registry.recover_sessions().await.unwrap();
-        assert_eq!(recovered.len(), 1);
-        assert_eq!(recovered[0].id, session.id);
-
-        let mut recovered_attachment = recovered_registry
-            .attach(&session.id, Some(u64::MAX - 1))
+        let resized = registry
+            .list()
             .await
+            .into_iter()
+            .find(|item| item.id == session.id)
             .unwrap();
-        assert!(recovered_attachment.gap_detected);
-        assert!(recovered_attachment
-            .replay
-            .first()
-            .is_some_and(|chunk| chunk.data.starts_with(b"\x1bc")));
-
-        recovered_registry
-            .write_input(&session.id, b"printf '__KUMOKARA_RECOVERED__\\n'\r")
-            .await
-            .unwrap();
-        wait_for_live_output(&mut recovered_attachment, "__KUMOKARA_RECOVERED__").await;
-
-        assert!(recovered_registry.remove(&session.id).await);
-        assert!(!tmux.session_exists(&tmux_name));
+        assert_eq!((resized.cols, resized.rows), (96, 28));
+        assert!(registry.remove(&session.id).await);
     }
 
-    fn isolated_tmux() -> Tmux {
-        Tmux::new(format!("kumokara-test-{}", uuid::Uuid::new_v4().simple()))
+    #[tokio::test]
+    async fn agent_adapter_metadata_and_terminal_titles_follow_precedence() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let registry = SessionRegistry::new();
+        let session = registry
+            .create_shell_session(temp_dir.path().to_path_buf(), 80, 24)
+            .await
+            .unwrap();
+
+        registry
+            .apply_agent_update(
+                &session.id,
+                AgentUpdate {
+                    code_agent: "claude".to_string(),
+                    session_title: Some("Review the adapter API".to_string()),
+                    status: Some(AgentStatus::Running),
+                    detail: Some("thinking".to_string()),
+                    mode: Some("opus".to_string()),
+                    task_progress: Some("1/3".to_string()),
+                },
+            )
+            .await
+            .unwrap();
+
+        let adapted = registry
+            .list()
+            .await
+            .into_iter()
+            .find(|item| item.id == session.id)
+            .unwrap();
+        let agent = adapted.agent.unwrap();
+        assert_eq!(adapted.title, "Review the adapter API");
+        assert_eq!(agent.provider, "claude_code");
+        assert_eq!(agent.display_name, "Claude Code");
+        assert_eq!(agent.icon, "✦");
+        assert_eq!(agent.status, Some(AgentStatus::Running));
+
+        registry
+            .set_terminal_title(&session.id, "OC | Product review\u{1b}\u{7}")
+            .await
+            .unwrap();
+        let titled = registry
+            .list()
+            .await
+            .into_iter()
+            .find(|item| item.id == session.id)
+            .unwrap();
+        assert_eq!(titled.title, "OC | Product review");
+
+        registry.set_terminal_title(&session.id, "").await.unwrap();
+        let fallback = registry
+            .list()
+            .await
+            .into_iter()
+            .find(|item| item.id == session.id)
+            .unwrap();
+        assert_eq!(fallback.title, "Review the adapter API");
+        assert!(registry.remove(&session.id).await);
     }
 }

@@ -69,7 +69,7 @@ Agent process discovered
     │
     ├── provider
     ├── agent cwd → project context
-    └── optional adapter metadata
+    └── AgentAdapter metadata / OSC 26 live state
 ```
 
 Agent 退出后 Session 仍然存在，并恢复为普通 Shell 状态。
@@ -80,10 +80,14 @@ Agent 退出后 Session 仍然存在，并恢复为普通 Shell 状态。
 
 1. **Generic PTY**：任何交互式 CLI 都能运行、输入、输出、resize 和重连。
 2. **Process discovery**：识别常见 Agent 进程及其 cwd，更新 Session 展示。
-3. **Provider adapter / hooks**：提供任务状态、审批、resume、模型等增强信息。
+3. **Provider adapter / hooks**：通过可注册 `AgentAdapter` 和 OSC 26 提供标题、任务状态、
+   审批、resume、模型等增强信息。
 
-当前实现覆盖前两层的基础能力。已知进程包括 Claude Code、Codex、OpenCode、Kimi
-Code 和 Mimo Code；未知工具始终退化为 Generic PTY，而不是拒绝运行。
+当前实现覆盖三层的公共入口。内置 adapter 包括 Claude Code、Codex、OpenCode、Cursor、
+Kimi Code、Mimo Code、Pi 和 omp；未知工具始终退化为 Generic PTY。外部 provider 可以
+实现 `kumokara_agent::AgentAdapter` 并注册到 `AgentAdapterRegistry`，无需修改 Session、
+WebSocket 或 UI 代码。Agent hook/plugin 可发出 Otty 提议的 OSC 26，由统一协议入口更新
+`SessionInfo.agent`。
 
 ## 4. Runtime 架构
 
@@ -95,13 +99,15 @@ SessionRegistry  ← 唯一 Session runtime source of truth
           │
           ├── SessionEntry
           │     ├── SessionInfo
-          │     ├── TmuxSession      # control client 与 I/O 生命周期
+          │     ├── PtySession       # PTY、子进程与 I/O 生命周期
           │     ├── OutputHistory    # VecDeque<seq, bytes>
           │     └── broadcast::Sender<OutputChunk>
           │
           └── Process discovery
                 ├── shell/descendant process tree
-                ├── known provider detection
+                ├── AgentAdapterRegistry
+                │     ├── built-in adapters
+                │     └── registered provider plugins
                 └── cwd discovery
 ```
 
@@ -112,7 +118,8 @@ SessionRegistry  ← 唯一 Session runtime source of truth
 
 ```text
 protocol   仅包含 Auth / Session / Terminal wire types
-engine     必需的 tmux runtime + control-mode 生命周期
+agent      AgentAdapter trait、registry 与内置 provider plugins
+engine     单一具体 PtySession、子进程与 I/O 生命周期
 auth       仅负责 token
 server     SessionRegistry + output history + process discovery + transport
 cli        本地与 daemon 启动入口
@@ -168,26 +175,34 @@ Attach 顺序：
 - PTY 和输出历史继续由 SessionRegistry 持有；
 - 重连后重新 list + attach。
 
+### 多浏览器尺寸
+
+- 每个 attachment 在本地独立执行 xterm fit；只有当前获得焦点的可见页面会在布局稳定后发送
+  `active=true` 的 resize，让全屏 TUI 匹配这个浏览器窗口；
+- 后台页面的 ResizeObserver 只更新本地 xterm，不修改共享 PTY；
+- 当前窗口发生真实输入时，客户端仍把它的 `cols/rows` 与 input 一起发送；
+- Server 把 resize 和 input 放入同一个有序 PTY command queue，保证尺寸先于对应输入生效；
+- 未携带 `active=true` 的旧 `terminal_resize` 仍作为 viewport-local hint 忽略；
+- 单个 PTY 进程物理上仍只有一套活动尺寸，因此发生输入的 attachment 是当次交互的临时
+  controller；所有 attachment 只同步同一份原始输出字节，不同步彼此的 UI 宽高。
+
 ### 用户关闭 Session
 
 - 从 Registry 移除 SessionEntry；
-- 显式执行 `kill-session` 终止 tmux 持有的 Shell；
-- Drop TmuxSession 只清理当前 Server 持有的 I/O/control client；
+- Drop PtySession 终止并回收 Shell 子进程；
 - live channel 关闭。
 
 ### Server 重启
 
-tmux 3.2+ 是必需的运行时依赖。Server 使用 Kumokara 专属 socket 创建带 metadata 的 detached
-session，避免读取或修改用户自己的 tmux sessions。重启后枚举并重新 attach，恢复进程、
-cwd、尺寸和可见 pane；旧的 output seq 与完整 scrollback 不可恢复，因此首次 attach 必须
-返回 gap notification，并用独立 ANSI replacement snapshot 重建可见屏幕。这个 snapshot
-不是完整 VT 状态，alternate-screen、复杂终端模式等仍属于 best-effort。
+Server 直接拥有 PTY。服务退出时这些 PTY 和对应的 Kumokara Session 一同结束，
+重启后只创建新的默认 Shell，不重建旧终端屏幕。Claude Code、Codex、OpenCode 等 Agent 的
+长期上下文由它们各自写入本地的 session 数据保存，用户在新 Shell 中通过 Agent 自身的
+`resume` 能力继续工作。
 
-启动时找不到 tmux 必须直接返回可操作的错误。创建、metadata 或恢复失败也必须向上传播，
-不能静默切换到生命周期语义更弱的 direct PTY。
-
-tmux 是固定基础设施，不为假设中的其他会话管理器保留 `SessionBackend` trait、枚举或 mode；
-engine 只保留具体的 `Tmux` server 操作和 `TmuxSession` control connection。
+这个边界刻意区分两种持久化：浏览器断开不会影响 Server 中的 Session；Server 重启则是
+明确的运行时边界。当前不引入 tmux、后台守护进程或第二套 Session metadata 来跨越它。
+`kumokara-engine` 因此只公开具体的 `PtySession`，不保留 backend trait、backend enum 或
+仅用于转发到 `portable-pty` 的实现模块。
 
 ## 8. cwd 与项目上下文绑定
 
@@ -213,8 +228,10 @@ session_create  { request_id, cwd?, cols, rows }
 session_list    { request_id }
 session_attach  { request_id, session_id, last_seq? }
 session_destroy { request_id, session_id }
-terminal_input  { session_id, data_base64 }
-terminal_resize { session_id, cols, rows }
+terminal_input  { session_id, data_base64, cols?, rows? }
+terminal_resize { session_id, cols, rows, active } # only active viewport controls PTY
+terminal_title  { session_id, title }       # xterm OSC 0/2
+agent_update    { session_id, code_agent, session_title?, status?, detail?, mode?, task_progress? }
 ```
 
 `terminal_output` 同样使用 `data_base64`，避免 PTY 字节跨 chunk 拆分 UTF-8 字符时发生
@@ -239,22 +256,22 @@ Server 默认使用无鉴权开发模式：连接建立后主动发送 `auth_ok`
 
 按以下顺序继续，避免再次铺设未接通的占位模块：
 
-1. 服务端精确 VT screen snapshot 与完整 scrollback 恢复；
-2. 按 canonical cwd 持久化确有需要的 Session 元数据；
-3. Claude Code、Codex、OpenCode hooks/adapters；
-4. tmux 多 window/pane 策略；
-5. SSH target；
-6. OAuth、多用户和资源隔离。
+1. Claude Code、Codex、OpenCode hooks/adapters 与 resume 入口；
+2. 服务端精确 VT screen model 与更完整的进程内 scrollback；
+3. SSH target；
+4. OAuth、多用户和资源隔离。
 
 每阶段必须包含真实 PTY 生命周期测试：create、input/output、browser detach、reattach、
-resize、destroy，以及对应的鉴权和恢复测试。
+resize、destroy，以及对应的鉴权和服务重启边界测试。
 
-### Agent Adapter 抽象 TODO
+### Agent Adapter 扩展边界
 
-当前 Agent 支持只负责通过进程名识别 provider 和 cwd，继续保留简单的数据驱动实现，
-暂不引入统一的 `AgentAdapter` trait 或 provider 类层级。
+`kumokara-agent` 已提供 `AgentAdapter` trait 与有序 registry。adapter 当前负责 process
+detection、稳定 provider id、显示名、通用 Unicode 图标和可选 title hint；hook/plugin
+通过通用 OSC 26 入口提供运行时 metadata。新增 provider 不得在 `SessionRegistry`、
+`process_discovery` 或 React 组件中增加 provider-specific 分支。
 
-先选择一个 Agent 完成端到端适配，并明确其全部实际行为，包括：
+后续每个深度适配仍需明确其全部实际行为，包括：
 
 - 进程与 CLI session ID 发现；
 - running、waiting、approval 等状态表达；

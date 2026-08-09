@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 kumokara-protocol.workspace = true
+kumokara-agent.workspace = true
 kumokara-engine.workspace = true
 kumokara-auth.workspace = true
 axum.workspace = true

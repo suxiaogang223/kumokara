@@ -1,5 +1,6 @@
 //! Best-effort discovery of session working directories and known agent CLIs.
 
+use kumokara_agent::AgentAdapterRegistry;
 use kumokara_protocol::session::AgentInfo;
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -9,6 +10,7 @@ pub(crate) struct ProcessContext {
     pub session_id: String,
     pub cwd: Option<PathBuf>,
     pub agent: Option<AgentInfo>,
+    pub title_hint: Option<String>,
 }
 
 struct ProcessRecord {
@@ -17,7 +19,10 @@ struct ProcessRecord {
     command: String,
 }
 
-pub(crate) fn discover(roots: &[(String, u32)]) -> Vec<ProcessContext> {
+pub(crate) fn discover(
+    roots: &[(String, u32)],
+    adapters: &AgentAdapterRegistry,
+) -> Vec<ProcessContext> {
     let records = snapshot();
     roots
         .iter()
@@ -38,13 +43,35 @@ pub(crate) fn discover(roots: &[(String, u32)]) -> Vec<ProcessContext> {
             let agent_process = records
                 .iter()
                 .filter(|process| process.pid != *root_pid && descendants.contains(&process.pid))
-                .find_map(|process| detect_agent(&process.command).map(|name| (process.pid, name)));
+                .find_map(|process| {
+                    adapters
+                        .detect(&process.command)
+                        .map(|agent| (process.pid, agent))
+                });
             let context_pid = agent_process.as_ref().map_or(*root_pid, |(pid, _)| *pid);
+            let (agent, title_hint) = agent_process
+                .map(|(_, agent)| {
+                    let title_hint = agent.title_hint;
+                    (
+                        Some(AgentInfo {
+                            provider: agent.provider,
+                            display_name: agent.display_name,
+                            icon: agent.icon,
+                            status: None,
+                            detail: None,
+                            mode: None,
+                            task_progress: None,
+                        }),
+                        title_hint,
+                    )
+                })
+                .unwrap_or((None, None));
 
             ProcessContext {
                 session_id: session_id.clone(),
                 cwd: process_cwd(context_pid),
-                agent: agent_process.map(|(_, provider)| AgentInfo { provider }),
+                agent,
+                title_hint,
             }
         })
         .collect()
@@ -74,21 +101,6 @@ fn snapshot() -> Vec<ProcessRecord> {
         .collect()
 }
 
-fn detect_agent(command: &str) -> Option<String> {
-    command
-        .split(|character: char| {
-            !(character.is_ascii_alphanumeric() || character == '-' || character == '_')
-        })
-        .find_map(|part| match part.to_ascii_lowercase().as_str() {
-            "claude" | "claude-code" => Some("claude_code".to_string()),
-            "codex" => Some("codex".to_string()),
-            "opencode" => Some("opencode".to_string()),
-            "kimi" | "kimi-code" | "kimi-cli" => Some("kimi_code".to_string()),
-            "mimo" | "mimo-code" | "mimo-cli" => Some("mimo_code".to_string()),
-            _ => None,
-        })
-}
-
 #[cfg(target_os = "linux")]
 fn process_cwd(pid: u32) -> Option<PathBuf> {
     std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
@@ -116,14 +128,21 @@ mod tests {
 
     #[test]
     fn recognizes_supported_agents_without_matching_unrelated_commands() {
+        let adapters = AgentAdapterRegistry::with_builtins();
         assert_eq!(
-            detect_agent("node /usr/local/lib/node_modules/@openai/codex/bin/codex.js"),
-            Some("codex".to_string())
+            adapters
+                .detect("node /usr/local/lib/node_modules/@openai/codex/bin/codex.js")
+                .unwrap()
+                .provider,
+            "codex"
         );
         assert_eq!(
-            detect_agent("/opt/homebrew/bin/claude --resume abc"),
-            Some("claude_code".to_string())
+            adapters
+                .detect("/opt/homebrew/bin/claude --resume abc")
+                .unwrap()
+                .provider,
+            "claude_code"
         );
-        assert_eq!(detect_agent("python build.py"), None);
+        assert!(adapters.detect("python build.py").is_none());
     }
 }

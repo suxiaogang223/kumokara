@@ -1,6 +1,6 @@
 //! Authenticated WebSocket transport for session control and terminal I/O.
 
-use crate::session_registry::TerminalChunk;
+use crate::session_registry::{AgentUpdate, TerminalChunk};
 use crate::AppState;
 use axum::{
     extract::{
@@ -169,7 +169,7 @@ async fn dispatch(
                         sender,
                         &ServerMessage::SessionCreated {
                             request_id,
-                            session,
+                            session: Box::new(session),
                         },
                     )
                     .await?;
@@ -239,11 +239,17 @@ async fn dispatch(
         ClientMessage::TerminalInput {
             session_id,
             data_base64,
+            cols,
+            rows,
         } => {
             use base64::Engine;
             match base64::engine::general_purpose::STANDARD.decode(data_base64) {
                 Ok(data) => {
-                    if let Err(error) = state.session_registry.write_input(&session_id, &data).await
+                    let size = cols.zip(rows);
+                    if let Err(error) = state
+                        .session_registry
+                        .write_input_at_size(&session_id, &data, size)
+                        .await
                     {
                         send_error(sender, None, "SESSION_NOT_FOUND", &error.to_string()).await?;
                     }
@@ -257,9 +263,51 @@ async fn dispatch(
             session_id,
             cols,
             rows,
+            active,
         } => {
-            if let Err(error) = state.session_registry.resize(&session_id, cols, rows).await {
-                send_error(sender, None, "SESSION_RESIZE_FAILED", &error.to_string()).await?;
+            // Old clients omitted `active` and remain passive. The focused
+            // browser explicitly claims responsibility for the PTY grid so a
+            // background page cannot resize a shared full-screen TUI.
+            if active {
+                if let Err(error) = state.session_registry.resize(&session_id, cols, rows).await {
+                    send_error(sender, None, "SESSION_RESIZE_FAILED", &error.to_string()).await?;
+                }
+            }
+        }
+        ClientMessage::TerminalTitle { session_id, title } => {
+            if let Err(error) = state
+                .session_registry
+                .set_terminal_title(&session_id, &title)
+                .await
+            {
+                send_error(sender, None, "SESSION_TITLE_FAILED", &error.to_string()).await?;
+            }
+        }
+        ClientMessage::AgentUpdate {
+            session_id,
+            code_agent,
+            session_title,
+            status,
+            detail,
+            mode,
+            task_progress,
+        } => {
+            if let Err(error) = state
+                .session_registry
+                .apply_agent_update(
+                    &session_id,
+                    AgentUpdate {
+                        code_agent,
+                        session_title,
+                        status,
+                        detail,
+                        mode,
+                        task_progress,
+                    },
+                )
+                .await
+            {
+                send_error(sender, None, "AGENT_UPDATE_FAILED", &error.to_string()).await?;
             }
         }
     }
