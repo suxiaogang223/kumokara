@@ -27,6 +27,8 @@ Prerequisites:
 
 - Rust stable (the repository toolchain installs `rust-analyzer` automatically)
 - Node.js 20+
+- tmux 3.2+ (required runtime; for example `brew install tmux` on macOS or install
+  the `tmux` package with your Linux distribution)
 
 ```bash
 git clone https://github.com/suxiaogang223/kumokara.git
@@ -63,7 +65,7 @@ Browser attachments
         ▼
 SessionRegistry (single runtime source of truth)
         ├── SessionInfo (cwd + optional detected agent)
-        ├── PtySession (process owner)
+        ├── TmuxSession (control connection)
         ├── bounded sequenced output history
         └── live output broadcast
 ```
@@ -77,15 +79,19 @@ canonical working directory discovered from each shell or agent process.
 The Rust workspace contains five focused crates:
 
 - `kumokara-protocol`: client/server wire types;
-- `kumokara-engine`: PTY ownership and optional tmux detection;
+- `kumokara-engine`: required tmux runtime and control-mode integration;
 - `kumokara-auth`: token generation and validation;
 - `kumokara-server`: session runtime and HTTP/WebSocket boundary;
 - `kumokara-cli`: local and daemon entry points.
 
 ## Current boundaries
 
-- Browser disconnect/reconnect is supported; server-restart recovery still
-  requires the planned tmux backend.
+- Browser disconnect/reconnect is supported. tmux owns every shell in a
+  Kumokara-specific server, so processes survive server restart and the visible
+  pane is reconstructed on recovery; exact VT state and complete scrollback
+  recovery are not yet supported.
+- Startup fails with an actionable error when the required `tmux` executable is
+  missing. Session creation never silently falls back to a weaker runtime.
 - Process-based agent discovery is best-effort. Provider hooks will add approval,
   task, and resume metadata without becoming a launch requirement.
 - Output replay is bounded raw terminal history, not yet a server-side terminal

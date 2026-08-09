@@ -1,13 +1,12 @@
 //! Local mode — start server and open browser.
 //!
 //! Implements the startup experience from DESIGN.md §2:
-//! 1. Detect tmux version → show recovery status
+//! 1. Validate the required tmux runtime
 //! 2. Configure optional token authentication
 //! 3. Start the server on localhost
 //! 4. Open the browser
 
 use anyhow::Result;
-use kumokara_engine::detect_tmux;
 use kumokara_server::{serve, AppState};
 use std::net::SocketAddr;
 
@@ -29,17 +28,11 @@ pub async fn run_local(require_token: bool) -> Result<()> {
     // Print ASCII banner
     println!("{BANNER}");
 
-    // Detect tmux
-    match detect_tmux() {
-        Some(version) => {
-            println!("✓ {version} detected (restart recovery backend: planned)");
-        }
-        None => {
-            println!("⚠ tmux not found — session recovery disabled. Install tmux for 24h agent persistence.");
-        }
-    }
-
-    let state = AppState::new(super::configure_auth(require_token));
+    let state = AppState::new(super::configure_auth(require_token))?;
+    println!(
+        "✓ {} — persistent session runtime ready (screen reconstruction is best-effort)",
+        state.tmux_version
+    );
 
     let addr: SocketAddr = "127.0.0.1:9876".parse()?;
     println!("→ Server listening on http://{addr}");

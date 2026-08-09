@@ -9,17 +9,11 @@ use std::net::SocketAddr;
 
 /// Run Kumokara in server (daemon) mode.
 pub async fn run_server(bind: &str, require_token: bool) -> Result<()> {
-    // Detect tmux
-    match kumokara_engine::detect_tmux() {
-        Some(version) => {
-            tracing::info!("{version} detected (restart recovery backend: planned)");
-        }
-        None => {
-            tracing::warn!("tmux not found — session recovery disabled");
-        }
-    }
-
-    let state = AppState::new(super::configure_auth(require_token));
+    let state = AppState::new(super::configure_auth(require_token))?;
+    tracing::info!(
+        "{} — persistent session runtime ready (screen reconstruction is best-effort)",
+        state.tmux_version
+    );
 
     let addr: SocketAddr = bind.parse()?;
     tracing::info!("Starting server on {}", addr);

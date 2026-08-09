@@ -2,6 +2,7 @@
 
 use futures::{SinkExt, StreamExt};
 use kumokara_auth::AuthManager;
+use kumokara_engine::tmux::Tmux;
 use kumokara_server::{serve, AppState};
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -17,35 +18,62 @@ async fn available_port() -> u16 {
         .port()
 }
 
-async fn spawn_test_server(auth: Option<AuthManager>) -> (SocketAddr, Option<String>) {
+struct TestServer {
+    addr: SocketAddr,
+    token: Option<String>,
+    tmux: Tmux,
+    task: tokio::task::JoinHandle<anyhow::Result<()>>,
+}
+
+impl Drop for TestServer {
+    fn drop(&mut self) {
+        self.task.abort();
+        let _ = self.tmux.kill_server();
+    }
+}
+
+async fn spawn_test_server(auth: Option<AuthManager>) -> TestServer {
     let addr = format!("127.0.0.1:{}", available_port().await)
         .parse()
         .unwrap();
     let token = auth
         .as_ref()
         .map(|manager| manager.server_token().to_string());
-    tokio::spawn(serve(addr, AppState::new(auth)));
+    let tmux = Tmux::new(format!(
+        "kumokara-integration-test-{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let state = AppState::with_tmux(auth, tmux.clone()).unwrap();
+    let task = tokio::spawn(serve(addr, state));
     tokio::time::sleep(Duration::from_millis(300)).await;
-    (addr, token)
+    TestServer {
+        addr,
+        token,
+        tmux,
+        task,
+    }
 }
 
 #[tokio::test]
 async fn startup_creates_one_default_session() {
-    let (addr, _) = spawn_test_server(None).await;
-    let response = reqwest::get(format!("http://{addr}/api/health"))
+    let server = spawn_test_server(None).await;
+    let response = reqwest::get(format!("http://{}/api/health", server.addr))
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
     let body: serde_json::Value = response.json().await.unwrap();
     assert_eq!(body["status"], "ok");
+    assert!(body["tmux_version"]
+        .as_str()
+        .is_some_and(|version| version.starts_with("tmux ")));
     assert_eq!(body["auth_required"], false);
     assert_eq!(body["session_count"], 1);
 }
 
 #[tokio::test]
 async fn websocket_requires_auth_as_the_first_message() {
-    let (addr, _) = spawn_test_server(Some(AuthManager::new())).await;
-    let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/api/ws"))
+    let server = spawn_test_server(Some(AuthManager::new())).await;
+    let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{}/api/ws", server.addr))
         .await
         .unwrap();
     socket
@@ -60,8 +88,8 @@ async fn websocket_requires_auth_as_the_first_message() {
 
 #[tokio::test]
 async fn websocket_connects_without_auth_by_default() {
-    let (addr, _) = spawn_test_server(None).await;
-    let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/api/ws"))
+    let server = spawn_test_server(None).await;
+    let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{}/api/ws", server.addr))
         .await
         .unwrap();
 
@@ -89,11 +117,11 @@ async fn websocket_connects_without_auth_by_default() {
 async fn session_survives_websocket_reconnect() {
     use base64::Engine;
 
-    let (addr, token) = spawn_test_server(Some(AuthManager::new())).await;
-    let token = token.unwrap();
-    let url = format!("ws://{addr}/api/ws");
+    let server = spawn_test_server(Some(AuthManager::new())).await;
+    let token = server.token.as_deref().unwrap();
+    let url = format!("ws://{}/api/ws", server.addr);
     let (mut first, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
-    authenticate(&mut first, &token).await;
+    authenticate(&mut first, token).await;
 
     first
         .send(json_message(serde_json::json!({
@@ -109,7 +137,7 @@ async fn session_survives_websocket_reconnect() {
     first.close(None).await.unwrap();
 
     let (mut second, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
-    authenticate(&mut second, &token).await;
+    authenticate(&mut second, token).await;
     second
         .send(json_message(serde_json::json!({
             "type": "session_list",

@@ -95,7 +95,7 @@ SessionRegistry  ← 唯一 Session runtime source of truth
           │
           ├── SessionEntry
           │     ├── SessionInfo
-          │     ├── PtySession       # 持有 child cleanup 生命周期
+          │     ├── TmuxSession      # control client 与 I/O 生命周期
           │     ├── OutputHistory    # VecDeque<seq, bytes>
           │     └── broadcast::Sender<OutputChunk>
           │
@@ -112,7 +112,7 @@ SessionRegistry  ← 唯一 Session runtime source of truth
 
 ```text
 protocol   仅包含 Auth / Session / Terminal wire types
-engine     仅负责 PTY 生命周期和 tmux 能力探测
+engine     必需的 tmux runtime + control-mode 生命周期
 auth       仅负责 token
 server     SessionRegistry + output history + process discovery + transport
 cli        本地与 daemon 启动入口
@@ -171,15 +171,23 @@ Attach 顺序：
 ### 用户关闭 Session
 
 - 从 Registry 移除 SessionEntry；
-- Drop PtySession；
-- kill/wait child；
+- 显式执行 `kill-session` 终止 tmux 持有的 Shell；
+- Drop TmuxSession 只清理当前 Server 持有的 I/O/control client；
 - live channel 关闭。
 
 ### Server 重启
 
-当前 portable-pty Session 会终止。完整恢复需要 tmux control-mode backend：启动时枚举
-带 Kumokara metadata 的 tmux session，重建 Registry，再恢复输出订阅。未完成前不得
-宣称支持 Server crash recovery；当前重启后只会创建一个新的默认 Session。
+tmux 3.2+ 是必需的运行时依赖。Server 使用 Kumokara 专属 socket 创建带 metadata 的 detached
+session，避免读取或修改用户自己的 tmux sessions。重启后枚举并重新 attach，恢复进程、
+cwd、尺寸和可见 pane；旧的 output seq 与完整 scrollback 不可恢复，因此首次 attach 必须
+返回 gap notification，并用独立 ANSI replacement snapshot 重建可见屏幕。这个 snapshot
+不是完整 VT 状态，alternate-screen、复杂终端模式等仍属于 best-effort。
+
+启动时找不到 tmux 必须直接返回可操作的错误。创建、metadata 或恢复失败也必须向上传播，
+不能静默切换到生命周期语义更弱的 direct PTY。
+
+tmux 是固定基础设施，不为假设中的其他会话管理器保留 `SessionBackend` trait、枚举或 mode；
+engine 只保留具体的 `Tmux` server 操作和 `TmuxSession` control connection。
 
 ## 8. cwd 与项目上下文绑定
 
@@ -231,10 +239,10 @@ Server 默认使用无鉴权开发模式：连接建立后主动发送 `auth_ok`
 
 按以下顺序继续，避免再次铺设未接通的占位模块：
 
-1. tmux backend 与 Server restart recovery；
+1. 服务端精确 VT screen snapshot 与完整 scrollback 恢复；
 2. 按 canonical cwd 持久化确有需要的 Session 元数据；
 3. Claude Code、Codex、OpenCode hooks/adapters；
-4. 服务端 VT screen snapshot；
+4. tmux 多 window/pane 策略；
 5. SSH target；
 6. OAuth、多用户和资源隔离。
 

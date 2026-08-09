@@ -23,6 +23,16 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install tmux (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes tmux
+
+      - name: Install tmux (macOS)
+        if: runner.os == 'macOS'
+        run: brew list tmux >/dev/null 2>&1 || brew install tmux
+
       - name: Cache Rust dependencies
         uses: actions/cache@v4
         with:
