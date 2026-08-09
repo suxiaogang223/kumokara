@@ -86,7 +86,7 @@ Agent 退出后 Session 仍然存在，并恢复为普通 Shell 状态。
 当前实现覆盖三层的公共入口。内置 adapter 包括 Claude Code、Codex、OpenCode、Cursor、
 Kimi Code、Mimo Code、Pi 和 omp；未知工具始终退化为 Generic PTY。外部 provider 可以
 实现 `kumokara_agent::AgentAdapter` 并注册到 `AgentAdapterRegistry`，无需修改 Session、
-WebSocket 或 UI 代码。Agent hook/plugin 可发出 Otty 提议的 OSC 26，由统一协议入口更新
+WebSocket 或 UI 代码。Agent hook/plugin 可发出 OSC 26 metadata，由统一协议入口更新
 `SessionInfo.agent`。
 
 ## 4. Runtime 架构
@@ -257,12 +257,167 @@ Server 默认使用无鉴权开发模式：连接建立后主动发送 `auth_ok`
 按以下顺序继续，避免再次铺设未接通的占位模块：
 
 1. Claude Code、Codex、OpenCode hooks/adapters 与 resume 入口；
-2. 服务端精确 VT screen model 与更完整的进程内 scrollback；
-3. SSH target；
-4. OAuth、多用户和资源隔离。
+2. 面向 AI/自动化的 Kumokara Self CLI 与稳定的结构化输出；
+3. 集中式快捷键路由、Natural Text Editing（包含 Hungry Delete）与可配置 keybindings；
+4. 浏览器本地 Split pane 布局与多 Session 同屏；
+5. 服务端精确 VT screen model 与更完整的进程内 scrollback；
+6. SSH target；
+7. OAuth、多用户和资源隔离。
 
 每阶段必须包含真实 PTY 生命周期测试：create、input/output、browser detach、reattach、
 resize、destroy，以及对应的鉴权和服务重启边界测试。
+
+### Kumokara Self CLI / AI 控制接口计划
+
+Self CLI 让运行在本机或 Kumokara Session 内的 AI 通过 `kumokara` 命令管理 Session。
+它是现有 WebSocket control protocol 的命令行客户端，不直接访问 `SessionRegistry`，也不增加
+第二套 HTTP Session API、状态缓存或后台 daemon。
+
+第一阶段命令面：
+
+```text
+kumokara session list [--json]
+kumokara session inspect <session-id> [--json]
+kumokara session create [--cwd <path>] [--cols <n>] [--rows <n>] [--json]
+kumokara session close <session-id> --confirm <session-id> [--json]
+kumokara session send <session-id> (--text <text> | --stdin) [--enter] [--json]
+kumokara session output <session-id> [--since <seq>] [--follow] [--raw | --jsonl]
+kumokara session resize <session-id> --cols <n> --rows <n> [--active]
+kumokara session current [--json]
+kumokara capabilities [--json]
+```
+
+- `list/create/close/send/output/resize` 分别复用现有 `session_list`、`session_create`、
+  `session_destroy`、`terminal_input`、`session_attach/detach`、`terminal_resize` 消息；
+- `inspect` 第一阶段通过 `session_list` 在客户端过滤，避免为了单条查询扩展服务端协议；
+- `current` 从 PTY 已有的 `KUMOKARA_SESSION_ID` 读取当前 Session，并通过服务端 list 验证它
+  仍然存在；不在 Kumokara PTY 中运行时返回明确的 non-zero exit code；
+- `send` 发送准确字节，不做 shell quoting、不自动添加换行；只有显式 `--enter` 才附加 `\r`。
+  它不能命名为 `exec`，因为现有协议无法证明 shell 当前位于 prompt、命令何时完成或退出码；
+- `output` 的 `--raw` 原样写终端字节，`--jsonl` 逐 chunk 输出 `session_id/seq/data_base64`。
+  在服务端 VT screen model 完成前，不得剥离 ANSI 后伪装成可靠 screen snapshot；
+- `resize` 默认只发送 viewport-local hint，不争抢浏览器 controller；AI 明确传入 `--active`
+  时才改变 PTY 活动尺寸，`send` 也只有显式提供 size 时才携带 `cols/rows`；
+- `capabilities` 输出 server/protocol version、支持的 command 和 feature flags，让 AI 先探测
+  能力再调用，避免依赖错误文本或 CLI 帮助文案判断版本。
+
+连接与鉴权：
+
+- endpoint 解析顺序为 `--server` → `KUMOKARA_SERVER` → 本机默认地址；HTTP(S) 地址统一转换为
+  WS(S) control endpoint。自定义 bind/port 启动时应把可连接地址注入新 Session 的
+  `KUMOKARA_SERVER`；
+- token 解析顺序为标准输入/受限权限配置 → `KUMOKARA_TOKEN` → `--token`。不得把 token
+  自动注入所有 PTY，也不得在日志、JSON error 或进程参数回显中泄露；
+- CLI 使用与浏览器完全相同的首帧鉴权和 TLS 边界。远程明文 WebSocket 默认拒绝，除非用户
+  显式允许不安全连接；
+- 每次 CLI 调用建立独立 WebSocket，使用 `request_id` 关联响应并在退出前 detach。独立连接的
+  output attachment 不会覆盖浏览器连接的 attachment；`--follow` 必须正确处理 history gap、
+  Ctrl-C 和服务端断连。
+
+面向 AI 的输出契约：
+
+- `--json` stdout 只输出一个稳定、带 `schema_version` 的 JSON document；streaming 使用
+  JSON Lines。日志、进度和人类提示只写 stderr；
+- 成功、参数错误、鉴权失败、Session 不存在、冲突、超时和连接失败使用稳定且文档化的
+  exit code；JSON error 同时提供机器可读 `code`、`message`、`request_id`；
+- Session ID 必须完整输出和显式传入，不允许 AI 依赖模糊标题执行破坏操作；`close` 需要
+  `--confirm <session-id>`，批量关闭另设命令并要求更强确认，不能复用模糊匹配；
+- 所有 mutation 支持客户端生成的 request id，并为未来幂等 create/destroy 留出协议字段；
+  第一阶段不承诺跨进程重试幂等，失败后 AI 必须先 list/inspect 再决定是否重试。
+
+实现保持简单：先在 `kumokara-cli` 内增加 `client` module 和 `session` subcommands，共享
+`kumokara-protocol` wire types；只有出现第二个 Rust control client 后才提取
+`kumokara-client` crate。不得让 CLI import server 内部 `SessionRegistry` 或复制协议 struct。
+
+第二阶段在基础协议具备可靠完成标记后再增加：等待 Agent status、按状态筛选、超时等待、
+可靠 screen snapshot、创建专用 Session 后运行单条命令并返回 exit status。命令完成应依赖
+明确的 shell integration/协议事件，不能通过提示符文本或输出静默时间猜测。
+
+测试至少覆盖：无鉴权与 token 模式、JSON/JSONL schema、原始非 UTF-8 chunk、history gap、
+`--follow` 取消、send 不隐式回车、close 确认、current Session 解析、浏览器与 CLI 同时 attach、
+非 active resize 不改变共享 PTY，以及远程 TLS/不安全连接策略。
+
+### 快捷键与键盘路由计划
+
+快捷键语义遵循常见原生终端和 macOS 文本编辑习惯，但不能直接复制原生应用的默认按键。
+普通浏览器会优先处理 `⌘T`、`⌘W`、`⌘N`、`⌘1`–`⌘9`、页面缩放等组合键；页面收不到的
+按键不能被声明为可用快捷键。
+
+实现时先分离 action 与 chord：
+
+```text
+ShortcutAction
+├── id                 # session.new / pane.split_right / text.delete_word_left / ...
+├── scope              # app / pane / terminal
+├── default bindings   # web 与未来 desktop profile 分开
+└── behavior           # UI action 或发送给 PTY 的字节序列
+```
+
+- 只维护一份 action registry 和一个键盘 dispatcher，不在各 React 组件散落全局
+  `keydown` listener；终端侧使用 xterm 官方 `attachCustomKeyEventHandler` 决定拦截或透传；
+- 路由顺序为：原生 `input`/`select`/`dialog` 编辑行为 → 精确匹配的 Kumokara action →
+  原样交给 xterm/PTY。不得按宽泛的 `metaKey`、`ctrlKey` 条件吞掉 Agent TUI 输入；
+- 提供 `web` 默认映射，并为未来 desktop/PWA profile 保留独立映射。被浏览器保留的组合键
+  在 web profile 中保持未绑定，通过按钮或未来 Command Palette 访问；
+- 用户自定义 keybindings 属于浏览器本地偏好，保存到 `localStorage`，支持按 action/chord
+  搜索、冲突检测、解绑和恢复默认；第一阶段先完成 registry 与固定默认映射，再增加设置 UI；
+- 文本编辑动作只发送 shell/readline 序列，不解析 xterm 屏幕，也不在前端维护第二份命令行：
+  `⌘←/⌘→` → `Ctrl-A/Ctrl-E`，`⌥←/⌥→` → `Esc-b/Esc-f`，Hungry Delete
+  `⌥⌫/⌥⌦` → `Ctrl-W/Esc-d`，删除到行首/行尾 `⌘⌫/⌘⌦` → `Ctrl-U/Ctrl-K`；
+- Natural Text Editing 默认只在 normal buffer 生效；alternate-screen Agent/TUI 优先透传。
+  用户可以显式重绑，但不能依靠猜测进程名称决定键盘行为；
+- 剪贴板优先使用浏览器 Clipboard API 和 xterm `paste()`，查找使用官方
+  `@xterm/addon-search`，滚动和清屏调用 xterm API，不自建文本模型或 DOM 滚动实现。
+
+第一阶段 action 范围：
+
+- Session：新建、关闭确认、上一个/下一个、按序号跳转、切换 Tabs panel；
+- Pane：创建 Split、关闭/聚焦/缩放 Pane、移动 divider、equalize；
+- Terminal：复制、粘贴、查找、滚动到顶部/底部、字体增减/恢复、清屏；
+- Text Editing：行首/行尾、按词移动、Hungry Delete、删除到行首/行尾；
+- General：打开 Settings；Command Palette 等有真实 action 数量后再实现，不先铺空壳。
+
+测试必须覆盖 chord 标准化、冲突检测、浏览器保留键不误报、原生表单控件不被拦截、
+normal/alternate buffer 路由、PTY 收到的精确字节，以及 macOS/Windows/Linux 键盘事件差异。
+
+### Split pane 实现计划
+
+Split 保持 Kumokara 的 Session-first 模型：Session 仍是服务端 PTY 资源，Pane 只是当前
+浏览器中查看和操作 Session 的本地视图，不新增 Workspace、Pane API 或服务端布局状态。
+
+浏览器保存一棵最小布局树：
+
+```text
+PaneLayout = Leaf { pane_id, session_id }
+           | Split { axis, ratio, first, second }
+```
+
+- `axis` 只取 horizontal/vertical，`ratio` 限制在安全范围；关闭一个 Pane 时折叠其父节点，
+  不留下单子节点 Split；
+- 布局和 focused pane 使用 `sessionStorage`，因此刷新当前页面可恢复，但不同浏览器窗口互不
+  同步；服务重启后引用已消失 Session 的 Leaf 会被丢弃并回到可用默认布局；
+- 新建 Split 默认创建一个继承当前 Session cwd 的新 Shell Session，再把它绑定到新 Leaf；
+  关闭 Pane 只移除浏览器视图，显式 Close Session 才销毁 PTY，避免误杀长时间运行的 Agent；
+- v1 同一页面的一棵布局树中，一个 Session 最多出现一次。当前 WebSocket attachment 以
+  `session_id` 为 key，同一连接重复 attach/detach 会互相覆盖；若未来需要镜像同一 Session，
+  再通过 `attachment_id` 或客户端引用计数扩展协议，不在前端绕过；
+- 每个 Leaf 拥有独立 xterm + `ResizeObserver`。Pane 获得焦点后才接收快捷键和输入；标题栏、
+  查找、复制、粘贴等 pane-scoped action 始终路由到 focused pane；
+- Resize 继续遵守现有多浏览器 controller 规则：本地所有 Pane 独立 fit，只有可见且有控制权
+  的页面向对应 Session 发送 settled grid，真实输入仍携带该 Pane 的 `cols/rows`；
+- 浏览器没有原生 split-view 控件。布局使用 CSS Grid/Flex，divider 只实现必要的 Pointer
+  Capture；divider 同时使用 `role="separator"`、`aria-orientation`、`aria-valuenow` 并支持
+  方向键调整。不得引入自绘窗口系统或第二套像素布局引擎；
+- 第一阶段只支持二叉 Split、拖动 resize、键盘 resize、方向/循环聚焦、equalize 和单 Pane
+  zoom。Pane 拖拽重排、任意边缘 drop、Recipe/layout 分享等延后到基本生命周期稳定之后。
+
+目标 action 包括 Split right/left/down/up、focus next/previous、按方向 focus、按方向移动
+divider、equalize、zoom/unzoom。默认 chord 必须通过前述 web reserved-key 审计；`⌘D`、
+`⌘W` 等原生应用常用组合键不能假设普通浏览器一定会交给页面。
+
+Split 的端到端测试至少覆盖：创建两个/嵌套 Pane、不同 Session 同时输出、焦点输入隔离、
+独立 resize、关闭后树折叠、刷新恢复、Session 被其他窗口删除后的布局清理，以及两个浏览器
+窗口拥有不同 Split/尺寸时不互相同步 UI 状态。
 
 ### Agent Adapter 扩展边界
 

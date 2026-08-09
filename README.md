@@ -77,7 +77,7 @@ redraw to that window before the user types again. Background pages never send
 `SIGWINCH`; input still carries the foreground grid atomically as a final guard,
 while output bytes continue to be broadcast to every attachment.
 
-Tab titles follow the same layered model as Otty: standard OSC 0/2 titles from
+Tab titles follow a layered terminal-title model: standard OSC 0/2 titles from
 the running program win, OSC 26 `SessionTitle` is the agent-aware hint, then the
 registered adapter display name and cwd provide fallbacks. OSC 26 also carries
 agent status and detail without scraping terminal text.

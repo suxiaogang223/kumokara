@@ -104,8 +104,8 @@ export function Terminal({ sessionId, theme, fontFamily, fontSize }: Props) {
       }
     }
 
-    // Match conventional terminal title semantics used by Otty and agent
-    // integrations: OSC 1 owns the tab/icon title, OSC 2 owns the window
+    // Match conventional terminal title semantics used by agent integrations:
+    // OSC 1 owns the tab/icon title, OSC 2 owns the window
     // title, and OSC 0 sets both. A dedicated tab title wins over the window
     // title until it is explicitly cleared.
     const titleSubscriptions = [0, 1, 2].map((identifier) => (
