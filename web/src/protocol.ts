@@ -1,12 +1,30 @@
 export interface SessionInfo {
   id: string
   cwd: string
-  agent: { provider: string } | null
+  agent: AgentInfo | null
   title: string
   created_at: string
   last_active_at: string
   cols: number
   rows: number
+}
+
+export type AgentStatus =
+  | 'idle'
+  | 'running'
+  | 'awaiting-approval'
+  | 'awaiting-input'
+  | 'error'
+  | 'finished'
+
+export interface AgentInfo {
+  provider: string
+  display_name: string
+  icon: string
+  status: AgentStatus | null
+  detail: string | null
+  mode: string | null
+  task_progress: string | null
 }
 
 export type ClientMessage =
@@ -16,8 +34,19 @@ export type ClientMessage =
   | { type: 'session_attach'; request_id: string; session_id: string; last_seq?: number }
   | { type: 'session_detach'; session_id: string }
   | { type: 'session_destroy'; request_id: string; session_id: string }
-  | { type: 'terminal_input'; session_id: string; data_base64: string }
-  | { type: 'terminal_resize'; session_id: string; cols: number; rows: number }
+  | { type: 'terminal_input'; session_id: string; data_base64: string; cols?: number; rows?: number }
+  | { type: 'terminal_resize'; session_id: string; cols: number; rows: number; active: boolean }
+  | { type: 'terminal_title'; session_id: string; title: string }
+  | {
+      type: 'agent_update'
+      session_id: string
+      code_agent: string
+      session_title?: string
+      status?: AgentStatus
+      detail?: string
+      mode?: string
+      task_progress?: string
+    }
 
 export type ServerMessage =
   | { type: 'auth_ok'; server_version: string }

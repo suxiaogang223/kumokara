@@ -15,6 +15,7 @@ interface SessionState {
   setSessions: (sessions: SessionInfo[]) => void
   addSession: (session: SessionInfo) => void
   removeSession: (sessionId: string) => void
+  updateSessionTitle: (sessionId: string, title: string) => void
   selectSession: (id: string | null) => void
   setConnected: (connected: boolean) => void
   setAuthToken: (token: string) => void
@@ -56,6 +57,12 @@ export const useSessionStore = create<SessionState>((set) => ({
             : state.selectedSessionId,
       }
     }),
+  updateSessionTitle: (sessionId, title) =>
+    set((state) => ({
+      sessions: state.sessions.map((session) => (
+        session.id === sessionId ? { ...session, title } : session
+      )),
+    })),
   selectSession: (id) => set({ selectedSessionId: id }),
   setConnected: (connected) => set({ connected }),
   setAuthToken: (token) => set({ authToken: token }),

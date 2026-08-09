@@ -44,6 +44,10 @@ impl PtySession {
         command.env("TERM", "xterm-256color");
         command.env("COLORTERM", "truecolor");
         command.env("CLICOLOR", "1");
+        // Let shells detect kumokara to skip loading prompts that require
+        // Nerd Font (e.g. oh-my-posh), which may not render correctly in the
+        // browser-backed xterm.js terminal.
+        command.env("KUMOKARA", "1");
 
         let pair = pty_system
             .openpty(pty_size(cols, rows))

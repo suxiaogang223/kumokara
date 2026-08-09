@@ -62,10 +62,10 @@ const lightUi = (overrides: Partial<UiPalette>): UiPalette => ({
 })
 
 const darkUi = (overrides: Partial<UiPalette>): UiPalette => ({
-  canvas: '#0b101b', surface: '#111827', surfaceRaised: '#172033',
-  surfaceActive: '#202b42', border: '#273047', borderStrong: '#344461',
-  text: '#dce4f5', textMuted: '#75819a', accent: '#86eaff',
-  success: '#75d99f', danger: '#ff8a91', ...overrides,
+  canvas: '#161320', surface: '#1e1c2e', surfaceRaised: '#26233a',
+  surfaceActive: '#2a273f', border: '#2a2740', borderStrong: '#3a3650',
+  text: '#e0def4', textMuted: '#817c9c', accent: '#c4a7e7',
+  success: '#9ccfd8', danger: '#eb6f92', ...overrides,
 })
 
 export const THEMES: readonly AppTheme[] = [
@@ -109,11 +109,11 @@ export const THEMES: readonly AppTheme[] = [
     brightCyan: '#62a0a0', brightWhite: '#ffffff',
   }),
   defineTheme('kumokara-dark', 'Kumokara', 'dark', darkUi({}), {
-    black: '#111827', red: '#ff7d86', green: '#75d99f', yellow: '#e8c66a',
-    blue: '#77bdfb', magenta: '#c49aff', cyan: '#86eaff', white: '#dce4f5',
-    brightBlack: '#65718a', brightRed: '#ff9ba2', brightGreen: '#9ee8ba',
-    brightYellow: '#f2d98e', brightBlue: '#9bd0ff', brightMagenta: '#d7b7ff',
-    brightCyan: '#b5f3ff', brightWhite: '#ffffff',
+    black: '#1e1c2e', red: '#eb6f92', green: '#9ccfd8', yellow: '#f6c177',
+    blue: '#9ccfd8', magenta: '#c4a7e7', cyan: '#9ccfd8', white: '#e0def4',
+    brightBlack: '#403d52', brightRed: '#eb6f92', brightGreen: '#9ccfd8',
+    brightYellow: '#f6c177', brightBlue: '#c4a7e7', brightMagenta: '#f6c177',
+    brightCyan: '#9ccfd8', brightWhite: '#ffffff',
   }),
   defineTheme('one-dark', 'One Dark', 'dark', darkUi({
     canvas: '#282c34', surface: '#21252b', surfaceRaised: '#2c313a',

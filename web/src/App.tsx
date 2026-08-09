@@ -1,15 +1,31 @@
-import { FormEvent, useCallback, useState } from 'react'
+import { FormEvent, useCallback, useEffect, useState } from 'react'
 import { SessionPanel } from './components/SessionPanel'
 import { SettingsPanel } from './components/SettingsPanel'
 import { Terminal } from './components/Terminal'
+import { TabsPanelIcon } from './components/TabsPanelIcon'
 import { useAppearance } from './hooks/useAppearance'
 import { useWebSocket } from './hooks/useWebSocket'
 import { useAppearanceStore } from './store/appearanceStore'
 import { useSessionStore } from './store/sessionStore'
 
+const TABS_PANEL_VISIBILITY_KEY = 'kumokara.tabs-panel-visibility.v2'
+const NARROW_LAYOUT_QUERY = '(max-width: 1024px)'
+
+function initialTabsPanelVisibility() {
+  try {
+    const stored = window.sessionStorage.getItem(TABS_PANEL_VISIBILITY_KEY)
+    if (stored === 'visible') return true
+    if (stored === 'hidden') return false
+  } catch {
+    // Fall through to the responsive default when storage is unavailable.
+  }
+  return !window.matchMedia(NARROW_LAYOUT_QUERY).matches
+}
+
 export default function App() {
   const [tokenInput, setTokenInput] = useState('')
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [tabsPanelVisible, setTabsPanelVisible] = useState(initialTabsPanelVisibility)
   const { appearance, theme } = useAppearance()
   const fontFamily = useAppearanceStore((state) => state.fontFamily)
   const fontSize = useAppearanceStore((state) => state.fontSize)
@@ -20,8 +36,34 @@ export default function App() {
   const connected = useSessionStore((state) => state.connected)
   const sessions = useSessionStore((state) => state.sessions)
   const selectedSessionId = useSessionStore((state) => state.selectedSessionId)
-  const selectedSession = sessions.find(({ id }) => id === selectedSessionId)
   const { send } = useWebSocket()
+  const selectedSession = sessions.find((session) => session.id === selectedSessionId)
+
+  const toggleTabsPanel = useCallback(() => {
+    setTabsPanelVisible((visible) => !visible)
+  }, [])
+
+  useEffect(() => {
+    try {
+      window.sessionStorage.setItem(
+        TABS_PANEL_VISIBILITY_KEY,
+        tabsPanelVisible ? 'visible' : 'hidden',
+      )
+    } catch {
+      // The layout still works when browser storage is unavailable.
+    }
+  }, [tabsPanelVisible])
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === 'l') {
+        event.preventDefault()
+        toggleTabsPanel()
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [toggleTabsPanel])
 
   const submitToken = (event: FormEvent) => {
     event.preventDefault()
@@ -81,22 +123,36 @@ export default function App() {
   }
 
   return (
-    <main className="app-shell">
-      <SessionPanel onCreate={createSession} onDestroy={destroySession} />
+    <main className={`app-shell${tabsPanelVisible ? '' : ' is-tabs-hidden'}`}>
+      <SessionPanel
+        sessions={sessions}
+        selectedSessionId={selectedSessionId}
+        connected={connected}
+        onCreate={createSession}
+        onDestroy={destroySession}
+        onOpenSettings={() => setSettingsOpen(true)}
+        onHide={toggleTabsPanel}
+      />
       <section className="terminal-pane">
-        <header className="terminal-header">
-          <div className="terminal-context">
-            <span className="terminal-title">{selectedSession?.title ?? 'Kumokara'}</span>
-            {selectedSession && <span className="terminal-cwd">{selectedSession.cwd}</span>}
+        <header className="terminal-titlebar">
+          <div className="terminal-titlebar-leading">
+            {!tabsPanelVisible && (
+              <button
+                className="tabs-panel-show"
+                type="button"
+                onClick={toggleTabsPanel}
+                title="Show tabs (⌘⇧L)"
+                aria-label="Show tabs"
+              >
+                <TabsPanelIcon />
+              </button>
+            )}
           </div>
-          <div className="terminal-actions">
-            <span className={connected ? 'connection-status is-online' : 'connection-status'}>
-              {connected ? '● online' : '○ reconnecting'}
-            </span>
-            <button className="header-icon-button" onClick={() => setSettingsOpen(true)} title="Settings" aria-label="Settings">⚙</button>
+          <div className="terminal-title" title={selectedSession?.title}>
+            {selectedSession?.title || 'Kumokara'}
           </div>
+          <div className="terminal-titlebar-trailing" aria-hidden="true" />
         </header>
-
         <div className="terminal-content">
           {selectedSessionId ? (
             <Terminal
@@ -107,7 +163,10 @@ export default function App() {
             />
           ) : (
             <div className="empty-state">
-              <p>Open a shell, then run Claude Code, Codex, OpenCode, or any CLI inside it.</p>
+              <div className="empty-state-icon">›_</div>
+              <p>
+                Open a shell, then run Claude Code, Codex, OpenCode, or any CLI inside it.
+              </p>
               <button className="secondary-button" onClick={createSession}>New shell</button>
             </div>
           )}
