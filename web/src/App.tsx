@@ -2,20 +2,19 @@ import { FormEvent, useCallback, useEffect, useState } from 'react'
 import { SessionPanel } from './components/SessionPanel'
 import { SettingsPanel } from './components/SettingsPanel'
 import { Terminal } from './components/Terminal'
-import { TabsPanelIcon } from './components/TabsPanelIcon'
 import { useAppearance } from './hooks/useAppearance'
 import { useWebSocket } from './hooks/useWebSocket'
 import { useAppearanceStore } from './store/appearanceStore'
 import { useSessionStore } from './store/sessionStore'
 
-const TABS_PANEL_VISIBILITY_KEY = 'kumokara.tabs-panel-visibility.v2'
+const SIDEBAR_STATE_KEY = 'kumokara.sidebar-state.v3'
 const NARROW_LAYOUT_QUERY = '(max-width: 1024px)'
 
-function initialTabsPanelVisibility() {
+function initialSidebarExpanded() {
   try {
-    const stored = window.sessionStorage.getItem(TABS_PANEL_VISIBILITY_KEY)
-    if (stored === 'visible') return true
-    if (stored === 'hidden') return false
+    const stored = window.localStorage.getItem(SIDEBAR_STATE_KEY)
+    if (stored === 'expanded') return true
+    if (stored === 'collapsed') return false
   } catch {
     // Fall through to the responsive default when storage is unavailable.
   }
@@ -25,7 +24,7 @@ function initialTabsPanelVisibility() {
 export default function App() {
   const [tokenInput, setTokenInput] = useState('')
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [tabsPanelVisible, setTabsPanelVisible] = useState(initialTabsPanelVisibility)
+  const [sidebarExpanded, setSidebarExpanded] = useState(initialSidebarExpanded)
   const { appearance, theme } = useAppearance()
   const fontFamily = useAppearanceStore((state) => state.fontFamily)
   const fontSize = useAppearanceStore((state) => state.fontSize)
@@ -39,31 +38,31 @@ export default function App() {
   const { send } = useWebSocket()
   const selectedSession = sessions.find((session) => session.id === selectedSessionId)
 
-  const toggleTabsPanel = useCallback(() => {
-    setTabsPanelVisible((visible) => !visible)
+  const toggleSidebar = useCallback(() => {
+    setSidebarExpanded((expanded) => !expanded)
   }, [])
 
   useEffect(() => {
     try {
-      window.sessionStorage.setItem(
-        TABS_PANEL_VISIBILITY_KEY,
-        tabsPanelVisible ? 'visible' : 'hidden',
+      window.localStorage.setItem(
+        SIDEBAR_STATE_KEY,
+        sidebarExpanded ? 'expanded' : 'collapsed',
       )
     } catch {
       // The layout still works when browser storage is unavailable.
     }
-  }, [tabsPanelVisible])
+  }, [sidebarExpanded])
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === 'l') {
         event.preventDefault()
-        toggleTabsPanel()
+        toggleSidebar()
       }
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [toggleTabsPanel])
+  }, [toggleSidebar])
 
   const submitToken = (event: FormEvent) => {
     event.preventDefault()
@@ -73,10 +72,11 @@ export default function App() {
     setAuthToken(token)
   }
 
-  const createSession = useCallback(() => {
+  const createSession = useCallback((cwd?: string) => {
     send({
       type: 'session_create',
       request_id: crypto.randomUUID(),
+      ...(cwd ? { cwd } : {}),
       cols: 100,
       rows: 30,
     })
@@ -123,31 +123,20 @@ export default function App() {
   }
 
   return (
-    <main className={`app-shell${tabsPanelVisible ? '' : ' is-tabs-hidden'}`}>
+    <main className={`app-shell${sidebarExpanded ? '' : ' is-sidebar-collapsed'}`}>
       <SessionPanel
         sessions={sessions}
         selectedSessionId={selectedSessionId}
         connected={connected}
+        expanded={sidebarExpanded}
         onCreate={createSession}
         onDestroy={destroySession}
         onOpenSettings={() => setSettingsOpen(true)}
-        onHide={toggleTabsPanel}
+        onToggle={toggleSidebar}
       />
       <section className="terminal-pane">
         <header className="terminal-titlebar">
-          <div className="terminal-titlebar-leading">
-            {!tabsPanelVisible && (
-              <button
-                className="tabs-panel-show"
-                type="button"
-                onClick={toggleTabsPanel}
-                title="Show tabs (⌘⇧L)"
-                aria-label="Show tabs"
-              >
-                <TabsPanelIcon />
-              </button>
-            )}
-          </div>
+          <div className="terminal-titlebar-leading" aria-hidden="true" />
           <div className="terminal-title" title={selectedSession?.title}>
             {selectedSession?.title || 'Kumokara'}
           </div>
@@ -167,7 +156,7 @@ export default function App() {
               <p>
                 Open a shell, then run Claude Code, Codex, OpenCode, or any CLI inside it.
               </p>
-              <button className="secondary-button" onClick={createSession}>New shell</button>
+              <button className="secondary-button" onClick={() => createSession()}>New shell</button>
             </div>
           )}
         </div>
