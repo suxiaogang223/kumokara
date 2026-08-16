@@ -3,14 +3,18 @@
 > Persistent, agent-neutral shells in the browser.
 
 Kumokara is a self-hosted terminal for long-running coding agents. Its product
-model is deliberately small: the left side is a session list and the right side
-is a shell. Start Claude Code, Codex, OpenCode, or any other CLI inside the shell;
-Kumokara does not make you create a project or workspace first.
+model is deliberately small: the left side organizes sessions by workspace and
+the right side is a shell. Start Claude Code, Codex, OpenCode, or any other CLI
+inside the shell; Kumokara stays agent-neutral and keeps the terminal as the
+primary interface.
+
+![Kumokara workspace and session interface](docs/assets/kumokara-workspaces.png)
 
 ## Product model
 
-- **Session first** — a terminal session is the only top-level object in the UI.
-- **Implicit project context** — the current working directory is the project context.
+- **Workspace navigation** — browser-local workspaces organize sessions by directory.
+- **Session runtime** — each terminal session remains an independent server-owned PTY.
+- **Implicit project context** — a session's current working directory is its workspace context.
 - **Agent neutral** — every CLI works through the generic PTY path.
 - **Progressive awareness** — known agent processes are detected automatically;
   adapters and hooks can add richer state later.
@@ -37,13 +41,15 @@ cargo run
 
 Kumokara starts without authentication for local development and creates a shell
 in the server's launch directory automatically. Start whichever agent you want
-from that terminal; use **+** when you need another session.
+from that terminal; use **New Session** when you need another session in the
+active workspace.
 
-Open **Settings → Appearance** from the terminal header to choose `Auto`, `Light`,
-or `Dark`, select separate light and dark color themes, and change the terminal
-font family or size. Settings are stored in the current browser. Kumokara keeps a
-portable system monospace stack by default; if a prompt such as Oh My Posh uses
-Nerd Font icons, install a Nerd Font and enter its exact family name in Settings.
+Open **Settings** at the bottom of the workspace sidebar to choose `System`,
+`Light`, or `Dark`, select separate light and dark color themes, and change the
+terminal font family or size. Settings are stored in the current browser.
+Kumokara keeps a portable system monospace stack by default; if a prompt such as
+Oh My Posh uses Nerd Font icons, install a Nerd Font and enter its exact family
+name in Settings.
 
 For a remote host:
 
@@ -82,8 +88,11 @@ the running program win, OSC 26 `SessionTitle` is the agent-aware hint, then the
 registered adapter display name and cwd provide fallbacks. OSC 26 also carries
 agent status and detail without scraping terminal text.
 
-There is no Workspace lifecycle or Workspace API. Project context is simply the
-canonical working directory discovered from each shell or agent process.
+Workspace navigation is browser-local: it stores directory paths and view
+preferences without introducing a second server runtime model. The server
+protocol still treats the session and its canonical working directory as the
+source of truth; there is not yet a server-synchronized Workspace lifecycle or
+Workspace API.
 
 The Rust workspace contains six focused crates:
 
