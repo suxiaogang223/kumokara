@@ -27,10 +27,17 @@ export interface AgentInfo {
   task_progress: string | null
 }
 
+export interface DirectoryEntry {
+  name: string
+  path: string
+}
+
 export type ClientMessage =
   | { type: 'auth'; token: string }
   | { type: 'session_create'; request_id: string; cwd?: string; cols: number; rows: number }
   | { type: 'session_list'; request_id: string }
+  | { type: 'directory_list'; request_id: string; path?: string; show_hidden: boolean }
+  | { type: 'directory_create'; request_id: string; parent: string; name: string }
   | { type: 'session_attach'; request_id: string; session_id: string; last_seq?: number }
   | { type: 'session_detach'; session_id: string }
   | { type: 'session_destroy'; request_id: string; session_id: string }
@@ -53,6 +60,8 @@ export type ServerMessage =
   | { type: 'auth_error'; code: string; message: string }
   | { type: 'session_created'; request_id: string; session: SessionInfo }
   | { type: 'session_list'; request_id: string; sessions: SessionInfo[] }
+  | { type: 'directory_listing'; request_id: string; home: string; path: string; parent: string | null; entries: DirectoryEntry[] }
+  | { type: 'directory_created'; request_id: string; path: string }
   | { type: 'terminal_output'; session_id: string; seq: number; data_base64: string }
   | { type: 'session_destroyed'; session_id: string }
   | { type: 'server_notification'; message: string }

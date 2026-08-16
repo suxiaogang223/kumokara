@@ -97,6 +97,85 @@ async fn websocket_connects_without_auth_by_default() {
         .unwrap();
     let listed = recv_until_type(&mut socket, "session_list").await;
     assert_eq!(listed["sessions"].as_array().unwrap().len(), 1);
+    let expected_home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(std::path::PathBuf::from)
+        .unwrap_or(std::env::current_dir().unwrap())
+        .canonicalize()
+        .unwrap();
+    assert_eq!(
+        listed["sessions"][0]["cwd"],
+        expected_home.to_string_lossy().as_ref()
+    );
+
+    socket
+        .send(json_message(serde_json::json!({
+            "type": "session_create",
+            "request_id": "home-session",
+            "cols": 80,
+            "rows": 24
+        })))
+        .await
+        .unwrap();
+    let created = recv_until_type(&mut socket, "session_created").await;
+    assert_eq!(
+        created["session"]["cwd"],
+        expected_home.to_string_lossy().as_ref()
+    );
+}
+
+#[tokio::test]
+async fn directory_picker_lists_creates_and_opens_a_session_workspace() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir(temp.path().join("visible")).unwrap();
+    std::fs::create_dir(temp.path().join(".hidden")).unwrap();
+    std::fs::write(temp.path().join("file.txt"), "not a directory").unwrap();
+
+    let server = spawn_test_server(Some(AuthManager::new())).await;
+    let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{}/api/ws", server.addr))
+        .await
+        .unwrap();
+    authenticate(&mut socket, server.token.as_deref().unwrap()).await;
+
+    socket
+        .send(json_message(serde_json::json!({
+            "type": "directory_list",
+            "request_id": "directories",
+            "path": temp.path(),
+            "show_hidden": false
+        })))
+        .await
+        .unwrap();
+    let listing = recv_until_type(&mut socket, "directory_listing").await;
+    assert_eq!(listing["request_id"], "directories");
+    assert_eq!(listing["entries"].as_array().unwrap().len(), 1);
+    assert_eq!(listing["entries"][0]["name"], "visible");
+
+    socket
+        .send(json_message(serde_json::json!({
+            "type": "directory_create",
+            "request_id": "create-directory",
+            "parent": temp.path(),
+            "name": "workspace"
+        })))
+        .await
+        .unwrap();
+    let created = recv_until_type(&mut socket, "directory_created").await;
+    let workspace = created["path"].as_str().unwrap();
+    assert!(std::path::Path::new(workspace).is_dir());
+
+    socket
+        .send(json_message(serde_json::json!({
+            "type": "session_create",
+            "request_id": "workspace-session",
+            "cwd": workspace,
+            "cols": 80,
+            "rows": 24
+        })))
+        .await
+        .unwrap();
+    let session = recv_until_type(&mut socket, "session_created").await;
+    assert_eq!(session["session"]["cwd"], workspace);
 }
 
 #[tokio::test]

@@ -1,5 +1,6 @@
 //! Authenticated WebSocket transport for session control and terminal I/O.
 
+use crate::directory_browser;
 use crate::session_registry::{AgentUpdate, TerminalChunk};
 use crate::AppState;
 use axum::{
@@ -158,7 +159,10 @@ async fn dispatch(
             cols,
             rows,
         } => {
-            let cwd = cwd.map(PathBuf::from).unwrap_or(std::env::current_dir()?);
+            let cwd = match cwd {
+                Some(cwd) => PathBuf::from(cwd),
+                None => directory_browser::home()?,
+            };
             match state
                 .session_registry
                 .create_shell_session(cwd, cols, rows)
@@ -195,6 +199,56 @@ async fn dispatch(
             )
             .await?;
         }
+        ClientMessage::DirectoryList {
+            request_id,
+            path,
+            show_hidden,
+        } => match directory_browser::list(path, show_hidden).await {
+            Ok(listing) => {
+                send_message(
+                    sender,
+                    &ServerMessage::DirectoryListing {
+                        request_id,
+                        home: listing.home,
+                        path: listing.path,
+                        parent: listing.parent,
+                        entries: listing.entries,
+                    },
+                )
+                .await?;
+            }
+            Err(error) => {
+                send_error(
+                    sender,
+                    Some(&request_id),
+                    "DIRECTORY_LIST_FAILED",
+                    &error.to_string(),
+                )
+                .await?;
+            }
+        },
+        ClientMessage::DirectoryCreate {
+            request_id,
+            parent,
+            name,
+        } => match directory_browser::create(parent, name).await {
+            Ok(path) => {
+                send_message(
+                    sender,
+                    &ServerMessage::DirectoryCreated { request_id, path },
+                )
+                .await?;
+            }
+            Err(error) => {
+                send_error(
+                    sender,
+                    Some(&request_id),
+                    "DIRECTORY_CREATE_FAILED",
+                    &error.to_string(),
+                )
+                .await?;
+            }
+        },
         ClientMessage::SessionAttach {
             request_id,
             session_id,

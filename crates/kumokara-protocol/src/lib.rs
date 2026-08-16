@@ -1,8 +1,9 @@
 //! Wire types shared by the Kumokara server and its clients.
 //!
-//! The protocol intentionally exposes only authentication, terminal sessions,
-//! and terminal I/O. Working directories and agents are properties discovered
-//! from sessions rather than separate lifecycle objects.
+//! The protocol exposes authentication, terminal sessions and I/O, plus a
+//! small server-side directory browser used to choose session working
+//! directories. Workspaces remain a client navigation concept rather than a
+//! separate server lifecycle object.
 
 pub mod messages;
 pub mod session;

@@ -7,6 +7,12 @@ use crate::session::{AgentStatus, SessionInfo};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DirectoryEntry {
+    pub name: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientMessage {
     Auth {
@@ -23,6 +29,18 @@ pub enum ClientMessage {
     },
     SessionList {
         request_id: String,
+    },
+    DirectoryList {
+        request_id: String,
+        #[serde(default)]
+        path: Option<String>,
+        #[serde(default)]
+        show_hidden: bool,
+    },
+    DirectoryCreate {
+        request_id: String,
+        parent: String,
+        name: String,
     },
     SessionAttach {
         request_id: String,
@@ -97,6 +115,17 @@ pub enum ServerMessage {
     SessionList {
         request_id: String,
         sessions: Vec<SessionInfo>,
+    },
+    DirectoryListing {
+        request_id: String,
+        home: String,
+        path: String,
+        parent: Option<String>,
+        entries: Vec<DirectoryEntry>,
+    },
+    DirectoryCreated {
+        request_id: String,
+        path: String,
     },
     TerminalOutput {
         session_id: String,

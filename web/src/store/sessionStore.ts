@@ -10,6 +10,7 @@ interface SessionState {
   authToken: string
   authState: AuthState
   authErrorMessage: string
+  sessionErrorMessage: string
   ws: WebSocket | null
 
   setSessions: (sessions: SessionInfo[]) => void
@@ -21,6 +22,7 @@ interface SessionState {
   setAuthToken: (token: string) => void
   setAuthState: (state: AuthState) => void
   setAuthError: (message: string) => void
+  setSessionError: (message: string) => void
   setWs: (ws: WebSocket | null) => void
 }
 
@@ -31,6 +33,7 @@ export const useSessionStore = create<SessionState>((set) => ({
   authToken: '',
   authState: 'idle',
   authErrorMessage: '',
+  sessionErrorMessage: '',
   ws: null,
 
   setSessions: (sessions) =>
@@ -45,6 +48,7 @@ export const useSessionStore = create<SessionState>((set) => ({
     set((state) => ({
       sessions: [...state.sessions.filter((item) => item.id !== session.id), session],
       selectedSessionId: session.id,
+      sessionErrorMessage: '',
     })),
   removeSession: (sessionId) =>
     set((state) => {
@@ -68,5 +72,6 @@ export const useSessionStore = create<SessionState>((set) => ({
   setAuthToken: (token) => set({ authToken: token }),
   setAuthState: (authState) => set({ authState }),
   setAuthError: (message) => set({ authErrorMessage: message, authState: 'error' }),
+  setSessionError: (sessionErrorMessage) => set({ sessionErrorMessage }),
   setWs: (ws) => set({ ws }),
 }))

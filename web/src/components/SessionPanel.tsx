@@ -1,15 +1,18 @@
-import { type FormEvent, type MouseEvent, type ReactNode, useEffect, useMemo, useState } from 'react'
+import { type MouseEvent, type ReactNode, useEffect, useMemo, useState } from 'react'
 import type { SessionInfo } from '../protocol'
 import { useSessionStore } from '../store/sessionStore'
 import { normalizeWorkspacePath, useWorkspaceStore } from '../store/workspaceStore'
 import { TabsPanelIcon } from './TabsPanelIcon'
+import { WorkspacePicker } from './WorkspacePicker'
 
 interface Props {
   sessions: SessionInfo[]
   selectedSessionId: string | null
   connected: boolean
+  sessionError: string
   expanded: boolean
   onCreate: (cwd?: string) => void
+  onClearCreateError: () => void
   onDestroy: (sessionId: string) => void
   onOpenSettings: () => void
   onToggle: () => void
@@ -76,8 +79,10 @@ export function SessionPanel({
   sessions,
   selectedSessionId,
   connected,
+  sessionError,
   expanded,
   onCreate,
+  onClearCreateError,
   onDestroy,
   onOpenSettings,
   onToggle,
@@ -86,6 +91,7 @@ export function SessionPanel({
   const workspaces = useWorkspaceStore((state) => state.workspaces)
   const activePath = useWorkspaceStore((state) => state.activePath)
   const addWorkspace = useWorkspaceStore((state) => state.addWorkspace)
+  const removeWorkspace = useWorkspaceStore((state) => state.removeWorkspace)
   const rememberWorkspaces = useWorkspaceStore((state) => state.rememberWorkspaces)
   const setActivePath = useWorkspaceStore((state) => state.setActivePath)
   const initialView = useMemo(readViewPreference, [])
@@ -94,9 +100,7 @@ export function SessionPanel({
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => new Set())
   const [viewMode, setViewMode] = useState<ViewMode>(initialView.viewMode)
   const [sortMode, setSortMode] = useState<SortMode>(initialView.sortMode)
-  const [addWorkspaceOpen, setAddWorkspaceOpen] = useState(false)
-  const [workspaceInput, setWorkspaceInput] = useState('')
-  const [workspaceError, setWorkspaceError] = useState('')
+  const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false)
   const [now, setNow] = useState(() => Date.now())
 
   useEffect(() => {
@@ -156,24 +160,16 @@ export function SessionPanel({
 
   const startNewSession = (path = activePath) => {
     if (!path) {
-      setAddWorkspaceOpen(true)
+      onCreate()
       return
     }
     setActivePath(path)
     onCreate(path)
   }
 
-  const submitWorkspace = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
-    const path = normalizeWorkspacePath(workspaceInput)
-    if (!path.startsWith('/')) {
-      setWorkspaceError('Enter an absolute path, for example /Users/me/code/project.')
-      return
-    }
+  const openWorkspace = (path: string) => {
     addWorkspace(path)
-    setWorkspaceInput('')
-    setWorkspaceError('')
-    setAddWorkspaceOpen(false)
+    setWorkspacePickerOpen(false)
   }
 
   const select = (session: SessionInfo) => {
@@ -238,10 +234,17 @@ export function SessionPanel({
         {expanded && <button className="sidebar-control sidebar-toggle" type="button" onClick={onToggle} title="Collapse sidebar (⌘⇧L)" aria-label="Collapse sidebar"><TabsPanelIcon /></button>}
       </div>
 
-      <button className="new-session-button" type="button" onClick={() => startNewSession()} title={expanded ? `New Session${activePath ? ` in ${activePath}` : ''}` : 'New Session'} aria-label="New Session">
+      <button className="new-session-button" type="button" disabled={!connected} onClick={() => startNewSession()} title={connected ? (expanded ? `New Session${activePath ? ` in ${activePath}` : ''}` : 'New Session') : 'Waiting for Kumokara to reconnect'} aria-label="New Session">
         <Icon name="add" size={expanded ? 17 : 19} />
         {expanded && <span>New Session</span>}
       </button>
+
+      {expanded && sessionError && (
+        <div className="session-create-error" role="alert">
+          <span>{sessionError}</span>
+          <button type="button" onClick={onClearCreateError} title="Dismiss" aria-label="Dismiss session error"><Icon name="close" size={14} /></button>
+        </div>
+      )}
 
       {expanded ? (
         <div className="session-browser">
@@ -260,7 +263,7 @@ export function SessionPanel({
                   <button type="button" onClick={(event) => chooseSort(event, 'name')}><span>Name</span>{sortMode === 'name' && <Icon name="check" />}</button>
                 </div>
               </details>
-              <button className="sidebar-control" type="button" onClick={() => setAddWorkspaceOpen(true)} title="Add workspace" aria-label="Add workspace"><Icon name="addFolder" size={19} /></button>
+              <button className="sidebar-control" type="button" disabled={!connected} onClick={() => setWorkspacePickerOpen(true)} title={connected ? 'Add workspace' : 'Waiting for Kumokara to reconnect'} aria-label="Add workspace"><Icon name="addFolder" size={19} /></button>
             </div>
           </div>
 
@@ -280,7 +283,10 @@ export function SessionPanel({
                       <span className="group-name">{group.label}</span>
                       <span className="group-count">{group.sessions.length}</span>
                     </button>
-                    <button className="workspace-new-session" type="button" onClick={() => startNewSession(group.path)} title={`New session in ${group.path}`} aria-label={`New session in ${group.label}`}><Icon name="add" size={15} /></button>
+                    <button className="workspace-new-session" type="button" disabled={!connected} onClick={() => startNewSession(group.path)} title={connected ? `New session in ${group.path}` : 'Waiting for Kumokara to reconnect'} aria-label={`New session in ${group.label}`}><Icon name="add" size={15} /></button>
+                    {group.sessions.length === 0 && (
+                      <button className="workspace-forget" type="button" onClick={() => { removeWorkspace(group.path); onClearCreateError() }} title={`Forget ${group.path}`} aria-label={`Forget workspace ${group.label}`}><Icon name="close" size={14} /></button>
+                    )}
                   </div>
                   {!collapsed && group.sessions.map((session) => renderSession(session, true))}
                 </section>
@@ -299,20 +305,7 @@ export function SessionPanel({
         <button className="settings-button" type="button" onClick={onOpenSettings} title="Settings" aria-label="Settings"><Icon name="settings" size={18} />{expanded && <span>Settings</span>}</button>
       </footer>
 
-      {addWorkspaceOpen && (
-        <div className="workspace-dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setAddWorkspaceOpen(false) }}>
-          <section className="workspace-dialog" role="dialog" aria-modal="true" aria-labelledby="add-workspace-title">
-            <header><div><h2 id="add-workspace-title">Add workspace</h2><p>Sessions created here will start in this directory.</p></div><button type="button" onClick={() => setAddWorkspaceOpen(false)} aria-label="Close"><Icon name="close" /></button></header>
-            <form onSubmit={submitWorkspace}>
-              <label htmlFor="workspace-path">Directory path</label>
-              <input id="workspace-path" autoFocus value={workspaceInput} onChange={(event) => { setWorkspaceInput(event.target.value); setWorkspaceError('') }} placeholder="/Users/me/code/project" spellCheck={false} />
-              {workspaceError && <p className="workspace-dialog-error" role="alert">{workspaceError}</p>}
-              <p className="workspace-dialog-hint">Use an absolute path on the Kumokara server.</p>
-              <div className="workspace-dialog-actions"><button className="secondary-button" type="button" onClick={() => setAddWorkspaceOpen(false)}>Cancel</button><button className="primary-button" type="submit" disabled={!workspaceInput.trim()}>Add workspace</button></div>
-            </form>
-          </section>
-        </div>
-      )}
+      {workspacePickerOpen && <WorkspacePicker onCancel={() => setWorkspacePickerOpen(false)} onOpen={openWorkspace} />}
     </aside>
   )
 }

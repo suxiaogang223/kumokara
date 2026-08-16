@@ -34,7 +34,9 @@ export default function App() {
   const setAuthState = useSessionStore((state) => state.setAuthState)
   const connected = useSessionStore((state) => state.connected)
   const sessions = useSessionStore((state) => state.sessions)
+  const sessionError = useSessionStore((state) => state.sessionErrorMessage)
   const selectedSessionId = useSessionStore((state) => state.selectedSessionId)
+  const setSessionError = useSessionStore((state) => state.setSessionError)
   const { send } = useWebSocket()
   const selectedSession = sessions.find((session) => session.id === selectedSessionId)
 
@@ -73,14 +75,16 @@ export default function App() {
   }
 
   const createSession = useCallback((cwd?: string) => {
-    send({
+    setSessionError('')
+    const sent = send({
       type: 'session_create',
       request_id: crypto.randomUUID(),
       ...(cwd ? { cwd } : {}),
       cols: 100,
       rows: 30,
     })
-  }, [send])
+    if (!sent) setSessionError('Kumokara is reconnecting. Try again when it is connected.')
+  }, [send, setSessionError])
 
   const destroySession = useCallback((sessionId: string) => {
     send({
@@ -128,8 +132,10 @@ export default function App() {
         sessions={sessions}
         selectedSessionId={selectedSessionId}
         connected={connected}
+        sessionError={sessionError}
         expanded={sidebarExpanded}
         onCreate={createSession}
+        onClearCreateError={() => setSessionError('')}
         onDestroy={destroySession}
         onOpenSettings={() => setSettingsOpen(true)}
         onToggle={toggleSidebar}

@@ -1,5 +1,6 @@
 //! HTTP/WebSocket boundary for the Kumokara terminal runtime.
 
+mod directory_browser;
 mod output_history;
 mod process_discovery;
 pub mod session_registry;
@@ -88,7 +89,7 @@ async fn ensure_default_session(state: &AppState) -> Result<()> {
         state
             .session_registry
             .create_shell_session(
-                std::env::current_dir()?,
+                directory_browser::home()?,
                 DEFAULT_TERMINAL_COLS,
                 DEFAULT_TERMINAL_ROWS,
             )

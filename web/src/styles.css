@@ -107,6 +107,8 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 .sidebar-control:hover,
 .sidebar-control.is-active,
 .settings-button:hover { background: color-mix(in srgb, var(--text) 7%, transparent); color: var(--text); }
+.sidebar-control:disabled { cursor: default; opacity: .38; }
+.sidebar-control:disabled:hover { background: transparent; color: var(--text-muted); }
 .sidebar-toggle { flex: none; }
 
 .tabs-panel-icon {
@@ -139,11 +141,27 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 }
 .new-session-button:hover { background: var(--surface-raised); border-color: color-mix(in srgb, var(--text) 18%, transparent); }
 .new-session-button:active { transform: scale(.985); }
+.new-session-button:disabled { cursor: default; opacity: .45; }
+.new-session-button:disabled:hover { background: color-mix(in srgb, var(--surface) 88%, var(--canvas)); border-color: color-mix(in srgb, var(--text) 12%, transparent); }
 .is-collapsed .new-session-button {
   width: 36px; height: 36px; margin: 12px 0; padding: 0;
   border-color: transparent; border-radius: 10px; background: transparent;
 }
 .is-collapsed .new-session-button:hover { background: color-mix(in srgb, var(--text) 7%, transparent); }
+
+.session-create-error {
+  display: flex; flex: none; align-items: flex-start; gap: 8px;
+  margin: -4px 2px 10px; padding: 9px 9px 9px 10px;
+  border: 1px solid color-mix(in srgb, var(--danger) 38%, transparent); border-radius: 9px;
+  background: color-mix(in srgb, var(--danger) 9%, transparent); color: var(--danger);
+  font-size: .7rem; line-height: 1.45;
+}
+.session-create-error span { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.session-create-error button {
+  display: grid; width: 20px; height: 20px; flex: none; padding: 0; place-items: center;
+  border: 0; border-radius: 5px; background: transparent; color: inherit; cursor: pointer;
+}
+.session-create-error button:hover { background: color-mix(in srgb, var(--danger) 14%, transparent); }
 
 .sidebar-icon { display: block; flex: none; }
 
@@ -215,14 +233,20 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
   display: flex; min-width: 0; height: 34px; flex: 1; align-items: center; gap: 6px; padding: 0 8px;
   border: 0; border-radius: 8px; background: transparent; color: var(--text); cursor: pointer; text-align: left;
 }
-.workspace-new-session {
+.workspace-new-session,
+.workspace-forget {
   display: grid; width: 26px; height: 26px; flex: none; margin-right: 4px; padding: 0; place-items: center;
   border: 0; border-radius: 7px; background: transparent; color: var(--text-muted); cursor: pointer;
   opacity: 0; transition: background var(--transition-fast), color var(--transition-fast), opacity var(--transition-fast);
 }
 .workspace-row:hover .workspace-new-session,
-.workspace-new-session:focus-visible { opacity: 1; }
-.workspace-new-session:hover { background: color-mix(in srgb, var(--text) 8%, transparent); color: var(--text); }
+.workspace-row:hover .workspace-forget,
+.workspace-new-session:focus-visible,
+.workspace-forget:focus-visible { opacity: 1; }
+.workspace-new-session:hover,
+.workspace-forget:hover { background: color-mix(in srgb, var(--text) 8%, transparent); color: var(--text); }
+.workspace-new-session:disabled { cursor: default; opacity: .3; }
+.workspace-forget:hover { color: var(--danger); }
 .workspace-row:hover .group-count { display: none; }
 .group-leading { position: relative; display: grid; width: 16px; height: 16px; flex: none; place-items: center; color: var(--text-muted); }
 .group-leading .sidebar-icon:last-child { display: none; transition: transform var(--transition-fast); }
@@ -321,38 +345,100 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 .is-collapsed .connection-status { order: 1; }
 .is-collapsed .settings-button { order: 2; }
 
-/* ---- Add workspace dialog ------------------------------------ */
-.workspace-dialog-backdrop {
+/* ---- Workspace directory picker ------------------------------ */
+.workspace-picker-backdrop {
   position: fixed; inset: 0; z-index: 40; display: grid; padding: 24px; place-items: center;
-  background: #00000055; backdrop-filter: blur(5px); animation: fadeIn var(--transition-normal);
+  background: #00000055; backdrop-filter: blur(7px); animation: fadeIn var(--transition-normal);
 }
-.workspace-dialog {
-  width: min(440px, 100%); padding: 22px;
-  border: 1px solid var(--border); border-radius: 14px;
-  background: var(--surface); color: var(--text); box-shadow: 0 24px 80px #00000045;
+.workspace-picker {
+  display: flex; width: min(760px, 100%); height: min(650px, 100%); min-height: 430px; flex-direction: column;
+  overflow: hidden; border: 1px solid var(--border); border-radius: 20px;
+  background: var(--surface); color: var(--text); box-shadow: 0 28px 90px #00000050;
   animation: scaleIn var(--transition-normal);
 }
-.workspace-dialog header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
-.workspace-dialog h2 { margin: 0; font-size: 1.02rem; font-weight: 650; }
-.workspace-dialog header p { margin: 6px 0 0; color: var(--text-muted); font-size: .76rem; line-height: 1.45; }
-.workspace-dialog header button {
-  display: grid; width: 30px; height: 30px; flex: none; padding: 0; place-items: center;
+.workspace-picker-header {
+  display: flex; height: 68px; flex: none; align-items: center; padding: 0 28px;
+}
+.workspace-picker-header h2 { margin: 0; font-size: 1.08rem; font-weight: 620; letter-spacing: -.02em; }
+.workspace-picker-location {
+  display: flex; height: 58px; flex: none; align-items: center; gap: 6px; padding: 0 22px;
+  border-bottom: 1px solid var(--border); color: var(--text-muted);
+}
+.workspace-picker-location > button {
+  display: grid; width: 34px; height: 34px; flex: none; padding: 0; place-items: center;
+  border: 0; border-radius: 9px; background: transparent; color: inherit; cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+.workspace-picker-location > button:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 7%, transparent); color: var(--text); }
+.workspace-picker-location > button:disabled { cursor: default; opacity: .3; }
+.workspace-picker-location .workspace-picker-current {
+  display: flex; width: auto; min-width: 0; flex: 1; justify-content: flex-start; gap: 9px; padding: 0 10px;
+  color: var(--text); font-size: .88rem; text-align: left;
+}
+.workspace-picker-current span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-picker-location form { display: flex; min-width: 0; flex: 1; gap: 7px; }
+.workspace-picker-location form button {
+  height: 36px; flex: none; padding: 0 13px; border: 1px solid var(--border-strong); border-radius: 9px;
+  background: var(--surface-raised); color: var(--text); cursor: pointer; font-size: .74rem;
+}
+.workspace-picker-location form button:hover:not(:disabled) { background: var(--surface-active); }
+.workspace-picker-location form button:disabled { cursor: default; opacity: .38; }
+.workspace-picker-location input,
+.workspace-new-folder-form input {
+  width: 100%; height: 36px; padding: 0 11px; outline: 0;
+  border: 1px solid var(--border-strong); border-radius: 9px;
+  background: color-mix(in srgb, var(--canvas) 78%, transparent); color: var(--text);
+  font-family: var(--terminal-font-family, ui-monospace, monospace); font-size: .76rem;
+}
+.workspace-picker-location input:focus,
+.workspace-new-folder-form input:focus { border-color: color-mix(in srgb, var(--accent) 72%, var(--border)); }
+.workspace-picker-body { min-height: 0; flex: 1; overflow-y: auto; padding: 14px 22px; scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--text-muted) 35%, transparent) transparent; }
+.workspace-directory-list { display: grid; gap: 3px; }
+.workspace-directory-row {
+  display: flex; min-width: 0; height: 42px; align-items: center; border-radius: 10px;
+  transition: background var(--transition-fast);
+}
+.workspace-directory-row:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
+.workspace-directory-row.is-selected { background: var(--surface-active); }
+.workspace-directory-select {
+  display: flex; min-width: 0; height: 100%; flex: 1; align-items: center; gap: 11px; padding: 0 10px;
+  border: 0; background: transparent; color: var(--text); cursor: pointer; text-align: left;
+}
+.workspace-directory-select svg { flex: none; color: var(--accent); }
+.workspace-directory-select span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .84rem; }
+.workspace-directory-enter {
+  display: grid; width: 36px; height: 34px; flex: none; margin-right: 4px; padding: 0; place-items: center;
   border: 0; border-radius: 8px; background: transparent; color: var(--text-muted); cursor: pointer;
 }
-.workspace-dialog header button:hover { background: var(--surface-raised); color: var(--text); }
-.workspace-dialog form { display: grid; margin-top: 22px; }
-.workspace-dialog label { margin-bottom: 7px; color: var(--text-muted); font-size: .72rem; font-weight: 600; }
-.workspace-dialog input {
-  width: 100%; height: 40px; padding: 0 11px;
-  border: 1px solid var(--border-strong); border-radius: 8px; outline: 0;
-  background: var(--canvas); color: var(--text); font-family: var(--terminal-font-family, monospace); font-size: .79rem;
+.workspace-directory-enter:hover { background: color-mix(in srgb, var(--text) 7%, transparent); color: var(--text); }
+.workspace-picker-state { display: grid; min-height: 180px; place-items: center; padding: 28px; color: var(--text-muted); font-size: .79rem; text-align: center; }
+.workspace-picker-error {
+  margin-bottom: 10px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--danger) 36%, transparent);
+  border-radius: 9px; background: color-mix(in srgb, var(--danger) 9%, transparent); color: var(--danger); font-size: .75rem;
 }
-.workspace-dialog input:focus { border-color: var(--accent); }
-.workspace-dialog-error { margin: 7px 0 0; color: var(--danger); font-size: .72rem; }
-.workspace-dialog-hint { margin: 7px 0 0; color: var(--text-muted); font-size: .69rem; }
-.workspace-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 22px; }
-.workspace-dialog-actions .primary-button,
-.workspace-dialog-actions .secondary-button { padding: 8px 13px; font-size: .77rem; }
+.workspace-new-folder-form {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; gap: 8px; align-items: center;
+  margin-bottom: 12px; padding: 10px; border: 1px solid var(--border); border-radius: 11px;
+  background: color-mix(in srgb, var(--canvas) 55%, transparent); color: var(--accent);
+}
+.workspace-new-folder-form .primary-button,
+.workspace-new-folder-form .secondary-button { height: 34px; padding: 0 12px; font-size: .73rem; }
+.workspace-picker-footer {
+  display: flex; min-height: 76px; flex: none; align-items: center; justify-content: space-between; gap: 20px; padding: 12px 22px;
+  border-top: 1px solid var(--border);
+}
+.workspace-picker-tools,
+.workspace-picker-actions { display: flex; align-items: center; gap: 10px; }
+.workspace-picker-new-folder {
+  display: flex; height: 38px; align-items: center; gap: 7px; padding: 0 13px;
+  border: 1px solid var(--border-strong); border-radius: 19px; background: transparent; color: var(--text); cursor: pointer; font-size: .78rem;
+}
+.workspace-picker-new-folder:hover:not(:disabled) { background: var(--surface-raised); }
+.workspace-picker-new-folder:disabled { cursor: default; opacity: .38; }
+.workspace-picker-tools label { display: flex; align-items: center; gap: 7px; color: var(--text-muted); cursor: pointer; font-size: .74rem; white-space: nowrap; }
+.workspace-picker-tools input { width: 14px; height: 14px; accent-color: var(--accent); }
+.workspace-picker-actions .primary-button,
+.workspace-picker-actions .secondary-button { min-width: 82px; height: 40px; padding: 0 18px; border-radius: 20px; font-size: .8rem; }
 
 /* ---- Terminal pane -------------------------------------------- */
 .terminal-pane {
@@ -530,6 +616,19 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 
 /* ---- Responsive ---------------------------------------------- */
 @media (max-width: 720px) {
+  .workspace-picker-backdrop { padding: 0; }
+  .workspace-picker { width: 100%; height: 100%; min-height: 0; border: 0; border-radius: 0; }
+  .workspace-picker-header { height: 60px; padding: 0 18px; }
+  .workspace-picker-location { padding: 0 12px; }
+  .workspace-picker-body { padding: 12px; }
+  .workspace-picker-footer { align-items: stretch; flex-direction: column; gap: 12px; padding: 12px; }
+  .workspace-picker-tools { justify-content: space-between; }
+  .workspace-picker-actions { justify-content: flex-end; }
+  .workspace-new-folder-form { grid-template-columns: auto minmax(0, 1fr); }
+  .workspace-new-folder-form .secondary-button,
+  .workspace-new-folder-form .primary-button { grid-row: 2; }
+  .workspace-new-folder-form .secondary-button { grid-column: 1; }
+  .workspace-new-folder-form .primary-button { grid-column: 2; }
   .settings-dialog { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); width: 100%; height: 100%; border: 0; border-radius: 0; }
   .settings-nav { gap: 12px; padding: 18px 16px 10px; border-right: 0; border-bottom: 1px solid var(--border); }
   .settings-nav h1 { padding: 0 4px; }

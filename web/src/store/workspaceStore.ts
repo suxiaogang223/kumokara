@@ -14,6 +14,7 @@ interface PersistedWorkspaces {
 
 interface WorkspaceState extends PersistedWorkspaces {
   addWorkspace: (path: string) => string
+  removeWorkspace: (path: string) => void
   rememberWorkspaces: (paths: string[]) => void
   setActivePath: (path: string) => void
 }
@@ -70,6 +71,16 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
     })
     return normalized
   },
+  removeWorkspace: (path) => set((state) => {
+    const normalized = normalizeWorkspacePath(path)
+    const workspaces = state.workspaces.filter((workspace) => workspace.path !== normalized)
+    const activePath = state.activePath === normalized
+      ? workspaces[0]?.path ?? null
+      : state.activePath
+    const next = { workspaces, activePath }
+    persist(next)
+    return next
+  }),
   rememberWorkspaces: (paths) => set((state) => {
     const known = new Set(state.workspaces.map((workspace) => workspace.path))
     const additions = [...new Set(paths.map(normalizeWorkspacePath))]

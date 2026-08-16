@@ -3,12 +3,22 @@ import type { ClientMessage, ServerMessage } from '../protocol'
 import { useSessionStore } from '../store/sessionStore'
 
 export type TerminalOutputHandler = (sessionId: string, seq: number, data: Uint8Array) => void
+export type DirectoryBrowserMessage = Extract<ServerMessage,
+  { type: 'directory_listing' | 'directory_created' | 'error' }
+>
+export type DirectoryBrowserHandler = (message: DirectoryBrowserMessage) => void
 
 const terminalHandlers = new Set<TerminalOutputHandler>()
+const directoryBrowserHandlers = new Set<DirectoryBrowserHandler>()
 
 export function onTerminalOutput(handler: TerminalOutputHandler) {
   terminalHandlers.add(handler)
-  return () => terminalHandlers.delete(handler)
+  return () => { terminalHandlers.delete(handler) }
+}
+
+export function onDirectoryBrowserMessage(handler: DirectoryBrowserHandler) {
+  directoryBrowserHandlers.add(handler)
+  return () => { directoryBrowserHandlers.delete(handler) }
 }
 
 export function useWebSocket() {
@@ -60,6 +70,12 @@ export function useWebSocket() {
         case 'session_list':
           store.setSessions(message.sessions)
           break
+        case 'directory_listing':
+        case 'directory_created':
+          directoryBrowserHandlers.forEach((handler) => {
+            try { handler(message) } catch { /* isolate UI handlers */ }
+          })
+          break
         case 'terminal_output':
           const bytes = Uint8Array.from(atob(message.data_base64), (character) => character.charCodeAt(0))
           terminalHandlers.forEach((handler) => {
@@ -67,6 +83,14 @@ export function useWebSocket() {
           })
           break
         case 'error':
+          if (message.code === 'SESSION_CREATE_FAILED') {
+            store.setSessionError(message.message || 'Failed to create session')
+          }
+          if (message.code.startsWith('DIRECTORY_')) {
+            directoryBrowserHandlers.forEach((handler) => {
+              try { handler(message) } catch { /* isolate UI handlers */ }
+            })
+          }
           console.warn(`[${message.code}] ${message.message}`)
           break
         case 'server_notification':
