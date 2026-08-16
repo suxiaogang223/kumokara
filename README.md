@@ -51,6 +51,10 @@ in the active workspace.
 Rust stable is the only build prerequisite for the Cargo installation. Node.js
 is only needed when developing the web interface from source.
 
+Prebuilt archives for Linux x64/ARM64 and macOS Intel/Apple Silicon are also
+available from [GitHub Releases](https://github.com/suxiaogang223/kumokara/releases).
+Each release includes a `SHA256SUMS` file for integrity verification.
+
 ## Settings
 
 Open **Settings** at the bottom of the workspace sidebar to choose `System`,
