@@ -37,6 +37,9 @@ jobs:
       - name: Audit dependencies
         run: npm --prefix web audit --audit-level=high
 
+      - name: Run frontend tests
+        run: npm --prefix web test
+
       - name: Build frontend
         run: npm --prefix web run build
 

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef } from 'react'
 import type { ClientMessage, ServerMessage } from '../protocol'
 import { useSessionStore } from '../store/sessionStore'
+import { createRequestId } from '../utils/requestId'
 
 export type TerminalOutputHandler = (sessionId: string, seq: number, data: Uint8Array) => void
 export type DirectoryBrowserMessage = Extract<ServerMessage,
@@ -41,7 +42,7 @@ export function useWebSocket() {
       if (socketRef.current?.readyState === WebSocket.OPEN) {
         socketRef.current.send(JSON.stringify({
           type: 'session_list',
-          request_id: crypto.randomUUID(),
+          request_id: createRequestId(),
         } satisfies ClientMessage))
       }
     }

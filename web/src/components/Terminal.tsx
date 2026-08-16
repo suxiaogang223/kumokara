@@ -5,6 +5,7 @@ import '@xterm/xterm/css/xterm.css'
 import { onTerminalOutput } from '../hooks/useWebSocket'
 import type { AgentStatus } from '../protocol'
 import { useSessionStore } from '../store/sessionStore'
+import { createRequestId } from '../utils/requestId'
 
 interface Props {
   sessionId: string
@@ -313,7 +314,7 @@ export function Terminal({ sessionId, theme, fontFamily, fontSize }: Props) {
 
       ws.send(JSON.stringify({
         type: 'session_attach',
-        request_id: crypto.randomUUID(),
+        request_id: createRequestId(),
         session_id: sessionId,
       }))
       scheduleFitRef.current()

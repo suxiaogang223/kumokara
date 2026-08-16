@@ -45,6 +45,7 @@ jobs:
         run: |
           npm --prefix web ci
           npm --prefix web audit --audit-level=high
+          npm --prefix web test
           npm --prefix web run build
           diff --recursive web/dist crates/kumokara-server/web-dist
 

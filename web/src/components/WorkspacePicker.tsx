@@ -2,6 +2,7 @@ import { type FormEvent, type ReactNode, useCallback, useEffect, useRef, useStat
 import { onDirectoryBrowserMessage } from '../hooks/useWebSocket'
 import type { ClientMessage, DirectoryEntry } from '../protocol'
 import { useSessionStore } from '../store/sessionStore'
+import { createRequestId } from '../utils/requestId'
 
 interface Props {
   onCancel: () => void
@@ -63,7 +64,7 @@ export function WorkspacePicker({ onCancel, onOpen }: Props) {
   }, [ws])
 
   const requestDirectory = useCallback((path?: string, hidden = showHidden) => {
-    const requestId = crypto.randomUUID()
+    const requestId = createRequestId()
     listRequestRef.current = requestId
     setLoading(true)
     setError('')
@@ -130,7 +131,7 @@ export function WorkspacePicker({ onCancel, onOpen }: Props) {
     event.preventDefault()
     const name = newFolderName.trim()
     if (!currentPath || !name) return
-    const requestId = crypto.randomUUID()
+    const requestId = createRequestId()
     createRequestRef.current = requestId
     setCreating(true)
     setError('')

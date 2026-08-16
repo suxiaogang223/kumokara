@@ -6,6 +6,7 @@ import { useAppearance } from './hooks/useAppearance'
 import { useWebSocket } from './hooks/useWebSocket'
 import { useAppearanceStore } from './store/appearanceStore'
 import { useSessionStore } from './store/sessionStore'
+import { createRequestId } from './utils/requestId'
 
 const SIDEBAR_STATE_KEY = 'kumokara.sidebar-state.v3'
 const NARROW_LAYOUT_QUERY = '(max-width: 1024px)'
@@ -78,7 +79,7 @@ export default function App() {
     setSessionError('')
     const sent = send({
       type: 'session_create',
-      request_id: crypto.randomUUID(),
+      request_id: createRequestId(),
       ...(cwd ? { cwd } : {}),
       cols: 100,
       rows: 30,
@@ -89,7 +90,7 @@ export default function App() {
   const destroySession = useCallback((sessionId: string) => {
     send({
       type: 'session_destroy',
-      request_id: crypto.randomUUID(),
+      request_id: createRequestId(),
       session_id: sessionId,
     })
   }, [send])
