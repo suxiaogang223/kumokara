@@ -10,7 +10,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "MIT"
 authors = ["Kumokara Contributors"]
@@ -33,19 +33,19 @@ futures = "0.3"
 portable-pty = "0.9"
 
 # Protocol crate (minimal deps)
-kumokara-protocol = { version = "0.1.0", path = "crates/kumokara-protocol" }
+kumokara-protocol = { version = "0.1.1", path = "crates/kumokara-protocol" }
 
 # Agent adapter API and built-in provider plugins
-kumokara-agent = { version = "0.1.0", path = "crates/kumokara-agent" }
+kumokara-agent = { version = "0.1.1", path = "crates/kumokara-agent" }
 
 # Engine
-kumokara-engine = { version = "0.1.0", path = "crates/kumokara-engine" }
+kumokara-engine = { version = "0.1.1", path = "crates/kumokara-engine" }
 
 # Auth
-kumokara-auth = { version = "0.1.0", path = "crates/kumokara-auth" }
+kumokara-auth = { version = "0.1.1", path = "crates/kumokara-auth" }
 
 # Server
-kumokara-server = { version = "0.1.0", path = "crates/kumokara-server" }
+kumokara-server = { version = "0.1.1", path = "crates/kumokara-server" }
 
 [profile.release]
 opt-level = "z"

@@ -176,6 +176,19 @@ async fn directory_picker_lists_creates_and_opens_a_session_workspace() {
         .unwrap();
     let session = recv_until_type(&mut socket, "session_created").await;
     assert_eq!(session["session"]["cwd"], workspace);
+    let session_id = session["session"]["id"].as_str().unwrap();
+    socket
+        .send(json_message(serde_json::json!({
+            "type": "session_destroy",
+            "request_id": "destroy-workspace-session",
+            "session_id": session_id
+        })))
+        .await
+        .unwrap();
+    assert_eq!(
+        recv_until_type(&mut socket, "session_destroyed").await["session_id"],
+        session_id
+    );
 }
 
 #[tokio::test]

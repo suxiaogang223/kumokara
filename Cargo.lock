@@ -904,7 +904,7 @@ dependencies = [
 
 [[package]]
 name = "kumokara"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -918,11 +918,11 @@ dependencies = [
 
 [[package]]
 name = "kumokara-agent"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "kumokara-auth"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "hex",
  "rand",
@@ -930,7 +930,7 @@ dependencies = [
 
 [[package]]
 name = "kumokara-engine"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "portable-pty",
@@ -940,14 +940,14 @@ dependencies = [
 
 [[package]]
 name = "kumokara-protocol"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "kumokara-server"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "axum",
