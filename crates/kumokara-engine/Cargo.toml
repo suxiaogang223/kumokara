@@ -3,6 +3,9 @@ name = "kumokara-engine"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Portable PTY session engine for Kumokara"
 
 [dependencies]
 tokio.workspace = true

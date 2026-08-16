@@ -14,6 +14,8 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 authors = ["Kumokara Contributors"]
+repository = "https://github.com/suxiaogang223/kumokara"
+homepage = "https://github.com/suxiaogang223/kumokara"
 
 [workspace.dependencies]
 tokio = { version = "1", features = ["full"] }
@@ -31,22 +33,19 @@ futures = "0.3"
 portable-pty = "0.9"
 
 # Protocol crate (minimal deps)
-kumokara-protocol = { path = "crates/kumokara-protocol" }
+kumokara-protocol = { version = "0.1.0", path = "crates/kumokara-protocol" }
 
 # Agent adapter API and built-in provider plugins
-kumokara-agent = { path = "crates/kumokara-agent" }
+kumokara-agent = { version = "0.1.0", path = "crates/kumokara-agent" }
 
 # Engine
-kumokara-engine = { path = "crates/kumokara-engine" }
+kumokara-engine = { version = "0.1.0", path = "crates/kumokara-engine" }
 
 # Auth
-kumokara-auth = { path = "crates/kumokara-auth" }
+kumokara-auth = { version = "0.1.0", path = "crates/kumokara-auth" }
 
 # Server
-kumokara-server = { path = "crates/kumokara-server" }
-
-# CLI
-kumokara-cli = { path = "crates/kumokara-cli" }
+kumokara-server = { version = "0.1.0", path = "crates/kumokara-server" }
 
 [profile.release]
 opt-level = "z"

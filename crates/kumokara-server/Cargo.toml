@@ -3,6 +3,9 @@ name = "kumokara-server"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "HTTP, WebSocket, and session runtime for Kumokara"
 
 [dependencies]
 kumokara-protocol.workspace = true
@@ -19,6 +22,7 @@ tracing.workspace = true
 anyhow.workspace = true
 futures.workspace = true
 base64 = "0.22"
+include_dir = "0.7.4"
 
 [dev-dependencies]
 reqwest = { version = "0.12", features = ["json"] }

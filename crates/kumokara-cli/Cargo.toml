@@ -1,8 +1,14 @@
 [package]
-name = "kumokara-cli"
+name = "kumokara"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Self-hosted, agent-neutral persistent terminal for the browser"
+readme = "../../README.md"
+keywords = ["terminal", "agent", "self-hosted", "pty"]
+categories = ["command-line-utilities", "development-tools"]
 default-run = "kumokara"
 
 [[bin]]
