@@ -5,6 +5,7 @@ import { Terminal } from './components/Terminal'
 import { useAppearance } from './hooks/useAppearance'
 import { useWebSocket } from './hooks/useWebSocket'
 import { useAppearanceStore } from './store/appearanceStore'
+import { useConnectionStore } from './store/connectionStore'
 import { useSessionStore } from './store/sessionStore'
 import { createRequestId } from './utils/requestId'
 
@@ -38,12 +39,22 @@ export default function App() {
   const sessionError = useSessionStore((state) => state.sessionErrorMessage)
   const selectedSessionId = useSessionStore((state) => state.selectedSessionId)
   const setSessionError = useSessionStore((state) => state.setSessionError)
+  const initializeConnection = useConnectionStore((state) => state.initialize)
+  const connectionInitialized = useConnectionStore((state) => state.initialized)
+  const desktopRuntime = useConnectionStore((state) => state.desktopRuntime)
+  const connectionMode = useConnectionStore((state) => state.mode)
+  const serverUrl = useConnectionStore((state) => state.serverUrl)
+  const useLocalServer = useConnectionStore((state) => state.useLocalServer)
   const { send } = useWebSocket()
   const selectedSession = sessions.find((session) => session.id === selectedSessionId)
 
   const toggleSidebar = useCallback(() => {
     setSidebarExpanded((expanded) => !expanded)
   }, [])
+
+  useEffect(() => {
+    void initializeConnection()
+  }, [initializeConnection])
 
   useEffect(() => {
     try {
@@ -95,6 +106,17 @@ export default function App() {
     })
   }, [send])
 
+  if (!connectionInitialized) {
+    return (
+      <main className="auth-screen">
+        <div className="auth-card auth-card-loading">
+          <div className="brand">Kumokara</div>
+          <p className="auth-intro">Starting your private local workspace…</p>
+        </div>
+      </main>
+    )
+  }
+
   if (authState !== 'authenticated') {
     const connecting = authState === 'connecting'
     return (
@@ -102,6 +124,7 @@ export default function App() {
         <form className="auth-card" onSubmit={submitToken}>
           <div className="brand">Kumokara</div>
           <p className="auth-intro">Persistent shells for whatever agent you use.</p>
+          {serverUrl && <div className="auth-endpoint" title={serverUrl}>{serverUrl}</div>}
           {authState === 'error' && (
             <div className="auth-error" role="alert">
               {authError || 'Authentication failed'}
@@ -122,6 +145,11 @@ export default function App() {
               {connecting ? '…' : 'Connect'}
             </button>
           </div>
+          {desktopRuntime && connectionMode === 'remote' && (
+            <button className="auth-local-button" type="button" onClick={useLocalServer}>
+              Use private local server
+            </button>
+          )}
         </form>
       </main>
     )

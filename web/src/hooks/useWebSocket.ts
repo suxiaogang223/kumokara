@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef } from 'react'
 import type { ClientMessage, ServerMessage } from '../protocol'
+import { websocketUrl } from '../connection'
+import { useConnectionStore } from '../store/connectionStore'
 import { useSessionStore } from '../store/sessionStore'
 import { decodeTerminalOutputFrame } from '../terminal/terminalOutput'
 import { createRequestId } from '../utils/requestId'
@@ -28,6 +30,7 @@ export function useWebSocket() {
   const reconnectRef = useRef<number | null>(null)
   const refreshRef = useRef<number | null>(null)
   const authToken = useSessionStore((state) => state.authToken)
+  const serverUrl = useConnectionStore((state) => state.serverUrl)
 
   useEffect(() => {
     let disposed = false
@@ -48,20 +51,20 @@ export function useWebSocket() {
       }
     }
 
-    const handleMessage = (message: ServerMessage) => {
+    const handleMessage = (socket: WebSocket, message: ServerMessage) => {
       const store = useSessionStore.getState()
       switch (message.type) {
         case 'auth_ok':
           store.setConnected(true)
           store.setAuthState('authenticated')
-          store.setWs(socketRef.current)
+          store.setWs(socket)
           requestSessions()
           if (refreshRef.current !== null) window.clearInterval(refreshRef.current)
           refreshRef.current = window.setInterval(requestSessions, 2500)
           break
         case 'auth_error':
           store.setAuthError(message.message || 'Authentication failed')
-          socketRef.current?.close()
+          socket.close()
           break
         case 'session_created':
           store.addSession(message.session)
@@ -92,21 +95,22 @@ export function useWebSocket() {
     }
 
     const connect = () => {
-      if (disposed) return
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-      const socket = new WebSocket(`${protocol}//${window.location.host}/api/ws`)
+      if (disposed || !serverUrl) return
+      const socket = new WebSocket(websocketUrl(serverUrl))
       socket.binaryType = 'arraybuffer'
       socketRef.current = socket
 
       socket.onopen = () => {
+        if (disposed || socketRef.current !== socket) return
         if (authToken) {
           socket.send(JSON.stringify({ type: 'auth', token: authToken } satisfies ClientMessage))
         }
       }
       socket.onmessage = (event) => {
+        if (disposed || socketRef.current !== socket) return
         if (typeof event.data === 'string') {
           try {
-            handleMessage(JSON.parse(event.data) as ServerMessage)
+            handleMessage(socket, JSON.parse(event.data) as ServerMessage)
           } catch (error) {
             console.warn('Invalid server message', error)
           }
@@ -123,6 +127,7 @@ export function useWebSocket() {
         }
       }
       socket.onclose = () => {
+        if (disposed || socketRef.current !== socket) return
         const store = useSessionStore.getState()
         store.setConnected(false)
         store.setWs(null)
@@ -142,7 +147,7 @@ export function useWebSocket() {
       socketRef.current = null
       socket?.close()
     }
-  }, [authToken])
+  }, [authToken, serverUrl])
 
   const send = useCallback((message: ClientMessage) => {
     if (socketRef.current?.readyState !== WebSocket.OPEN) return false

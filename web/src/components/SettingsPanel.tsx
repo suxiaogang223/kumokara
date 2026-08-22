@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from 'react'
 import { DEFAULT_FONT_FAMILY, useAppearanceStore } from '../store/appearanceStore'
+import { useConnectionStore } from '../store/connectionStore'
 import {
   DARK_THEMES,
   LIGHT_THEMES,
@@ -13,13 +14,14 @@ interface Props {
   onClose: () => void
 }
 
-type SettingsSection = 'appearance' | 'terminal'
-type SettingsIcon = 'appearance' | 'close' | 'dark' | 'light' | 'system' | 'terminal'
+type SettingsSection = 'connection' | 'appearance' | 'terminal'
+type SettingsIcon = 'appearance' | 'close' | 'connection' | 'dark' | 'light' | 'system' | 'terminal'
 
 function Icon({ name, size = 18 }: { name: SettingsIcon; size?: number }) {
   const paths: Record<SettingsIcon, ReactNode> = {
     appearance: <><path d="M12 2.8v2M12 19.2v2M2.8 12h2M19.2 12h2M5.5 5.5l1.4 1.4M17.1 17.1l1.4 1.4M18.5 5.5l-1.4 1.4M6.9 17.1l-1.4 1.4" /><circle cx="12" cy="12" r="4" /></>,
     close: <><path d="m7 7 10 10M17 7 7 17" /></>,
+    connection: <><circle cx="12" cy="12" r="2" /><path d="M7.8 7.8a6 6 0 0 1 8.4 0M4.9 4.9a10 10 0 0 1 14.2 0M7.8 16.2a6 6 0 0 0 8.4 0M4.9 19.1a10 10 0 0 0 14.2 0" /></>,
     dark: <path d="M19.5 14.6A8 8 0 0 1 9.4 4.5 8.1 8.1 0 1 0 19.5 14.6Z" />,
     light: <><circle cx="12" cy="12" r="3.5" /><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M18.7 5.3l-1.4 1.4M6.7 17.3l-1.4 1.4" /></>,
     system: <><rect x="4" y="4.5" width="16" height="11.5" rx="2" /><path d="M9 20h6M12 16v4" /></>,
@@ -43,8 +45,20 @@ export function SettingsPanel({ activeAppearance, onClose }: Props) {
   const setFontFamily = useAppearanceStore((state) => state.setFontFamily)
   const setFontSize = useAppearanceStore((state) => state.setFontSize)
   const reset = useAppearanceStore((state) => state.reset)
-  const [activeSection, setActiveSection] = useState<SettingsSection>('appearance')
+  const desktopRuntime = useConnectionStore((state) => state.desktopRuntime)
+  const connectionMode = useConnectionStore((state) => state.mode)
+  const serverUrl = useConnectionStore((state) => state.serverUrl)
+  const localServerUrl = useConnectionStore((state) => state.localServerUrl)
+  const savedRemoteServerUrl = useConnectionStore((state) => state.remoteServerUrl)
+  const savedAllowInsecure = useConnectionStore((state) => state.allowInsecureRemote)
+  const connectRemote = useConnectionStore((state) => state.connectRemote)
+  const useLocalServer = useConnectionStore((state) => state.useLocalServer)
+  const [activeSection, setActiveSection] = useState<SettingsSection>(desktopRuntime ? 'connection' : 'appearance')
   const [fontDraft, setFontDraft] = useState(fontFamily)
+  const [remoteServerDraft, setRemoteServerDraft] = useState(savedRemoteServerUrl)
+  const [remoteTokenDraft, setRemoteTokenDraft] = useState('')
+  const [allowInsecureDraft, setAllowInsecureDraft] = useState(savedAllowInsecure)
+  const [connectionError, setConnectionError] = useState('')
   const dialogRef = useRef<HTMLDialogElement>(null)
 
   useEffect(() => setFontDraft(fontFamily), [fontFamily])
@@ -59,6 +73,20 @@ export function SettingsPanel({ activeAppearance, onClose }: Props) {
 
   const closeDialog = () => dialogRef.current?.close()
   const commitFontFamily = () => setFontFamily(fontDraft)
+  const submitRemote = (event: FormEvent) => {
+    event.preventDefault()
+    try {
+      connectRemote(remoteServerDraft, remoteTokenDraft, allowInsecureDraft)
+      onClose()
+    } catch (error) {
+      setConnectionError(error instanceof Error ? error.message : 'Invalid server address')
+    }
+  }
+
+  const selectLocalServer = () => {
+    useLocalServer()
+    onClose()
+  }
 
   return (
     <dialog
@@ -74,6 +102,17 @@ export function SettingsPanel({ activeAppearance, onClose }: Props) {
       <nav className="settings-nav" aria-label="Settings sections">
         <h1 id="settings-title">Settings</h1>
         <div className="settings-nav-list">
+          {desktopRuntime && (
+            <button
+              className={activeSection === 'connection' ? 'is-active' : ''}
+              type="button"
+              onClick={() => setActiveSection('connection')}
+              aria-current={activeSection === 'connection' ? 'page' : undefined}
+            >
+              <Icon name="connection" />
+              <span>Connection</span>
+            </button>
+          )}
           <button
             className={activeSection === 'appearance' ? 'is-active' : ''}
             type="button"
@@ -103,7 +142,68 @@ export function SettingsPanel({ activeAppearance, onClose }: Props) {
         </header>
 
         <div className="settings-scroll">
-          {activeSection === 'appearance' ? (
+          {activeSection === 'connection' && desktopRuntime ? (
+            <>
+              <header className="settings-page-header">
+                <h2>Connection</h2>
+                <p>Use the private server inside this app, or connect to another Kumokara host.</p>
+              </header>
+
+              <section className="settings-section">
+                <h3>Private local server</h3>
+                <div className={`connection-option${connectionMode === 'local' ? ' is-selected' : ''}`}>
+                  <div>
+                    <strong>On this Mac</strong>
+                    <code>{localServerUrl}</code>
+                    <p>Runs inside the desktop app on a random loopback port with a private token.</p>
+                  </div>
+                  <button className="secondary-button" type="button" disabled={connectionMode === 'local'} onClick={selectLocalServer}>
+                    {connectionMode === 'local' ? 'Connected' : 'Use local'}
+                  </button>
+                </div>
+              </section>
+
+              <section className="settings-section">
+                <h3>Remote server</h3>
+                <form className="remote-connection-form" onSubmit={submitRemote}>
+                  <label htmlFor="remote-server-url">Server address</label>
+                  <input
+                    id="remote-server-url"
+                    value={remoteServerDraft}
+                    onChange={(event) => { setRemoteServerDraft(event.target.value); setConnectionError('') }}
+                    placeholder="https://kumokara.example.com"
+                    spellCheck={false}
+                    autoCapitalize="none"
+                  />
+                  <label htmlFor="remote-server-token">Access token</label>
+                  <input
+                    id="remote-server-token"
+                    type="password"
+                    value={remoteTokenDraft}
+                    onChange={(event) => setRemoteTokenDraft(event.target.value)}
+                    placeholder="Optional for servers without authentication"
+                    autoComplete="off"
+                  />
+                  <label className="connection-checkbox">
+                    <input
+                      type="checkbox"
+                      checked={allowInsecureDraft}
+                      onChange={(event) => setAllowInsecureDraft(event.target.checked)}
+                    />
+                    <span>Allow plaintext connection to a remote host</span>
+                  </label>
+                  <p className="settings-hint">Remote addresses require TLS by default. Tokens stay in memory and are never saved.</p>
+                  {connectionError && <div className="connection-form-error" role="alert">{connectionError}</div>}
+                  <div className="connection-form-actions">
+                    <span className="connection-current" title={serverUrl ?? undefined}>
+                      {connectionMode === 'remote' ? `Current: ${serverUrl}` : 'Currently using the local server'}
+                    </span>
+                    <button className="primary-button" type="submit">Connect</button>
+                  </div>
+                </form>
+              </section>
+            </>
+          ) : activeSection === 'appearance' ? (
             <>
               <header className="settings-page-header">
                 <h2>Appearance</h2>
@@ -178,9 +278,11 @@ export function SettingsPanel({ activeAppearance, onClose }: Props) {
             </>
           )}
 
-          <footer className="settings-footer">
-            <button className="secondary-button" type="button" onClick={reset}>Restore defaults</button>
-          </footer>
+          {activeSection !== 'connection' && (
+            <footer className="settings-footer">
+              <button className="secondary-button" type="button" onClick={reset}>Restore defaults</button>
+            </footer>
+          )}
         </div>
       </div>
     </dialog>

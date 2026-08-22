@@ -24,6 +24,7 @@ interface SessionState {
   setAuthError: (message: string) => void
   setSessionError: (message: string) => void
   setWs: (ws: WebSocket | null) => void
+  resetConnection: (authToken: string) => void
 }
 
 export const useSessionStore = create<SessionState>((set) => ({
@@ -74,4 +75,18 @@ export const useSessionStore = create<SessionState>((set) => ({
   setAuthError: (message) => set({ authErrorMessage: message, authState: 'error' }),
   setSessionError: (sessionErrorMessage) => set({ sessionErrorMessage }),
   setWs: (ws) => set({ ws }),
+  resetConnection: (authToken) =>
+    set((state) => {
+      state.ws?.close()
+      return {
+        sessions: [],
+        selectedSessionId: null,
+        connected: false,
+        authToken,
+        authState: authToken ? 'connecting' : 'idle',
+        authErrorMessage: '',
+        sessionErrorMessage: '',
+        ws: null,
+      }
+    }),
 }))

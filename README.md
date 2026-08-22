@@ -1,6 +1,6 @@
 # Kumokara（雲殻）
 
-> Persistent, agent-neutral shells in the browser.
+> Persistent, agent-neutral shells in the browser or a lightweight desktop app.
 
 [![Crates.io](https://img.shields.io/crates/v/kumokara.svg)](https://crates.io/crates/kumokara)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -15,6 +15,8 @@ session, then run Claude Code, Codex, OpenCode, or any other CLI inside it.
 
 - **One-command installation** — the browser UI is bundled into the binary; a
   Cargo installation does not require Node.js or a source checkout.
+- **Desktop-ready architecture** — the Tauri client reuses the same UI and
+  protocol for a private local runtime or a remote TLS endpoint.
 - **Workspace navigation** — browser-local workspaces organize sessions by
   directory in a compact tree.
 - **Persistent sessions** — each terminal is a server-owned PTY that stays alive
@@ -55,12 +57,29 @@ Prebuilt archives for Linux x64/ARM64 and macOS Intel/Apple Silicon are also
 available from [GitHub Releases](https://github.com/suxiaogang223/kumokara/releases).
 Each release includes a `SHA256SUMS` file for integrity verification.
 
+### Desktop preview
+
+The Phase 2 desktop client currently builds from source on macOS:
+
+```bash
+npm --prefix web ci
+npm --prefix apps/desktop ci
+npm --prefix apps/desktop run dev
+```
+
+It starts a token-protected Kumokara server on a random loopback port inside the
+app. In **Settings → Connection**, switch between that private local server and
+a remote Kumokara deployment. Remote addresses require TLS by default; enabling
+plaintext remote access is an explicit per-server choice. Remote tokens are
+kept in memory and are not saved.
+
 ## Settings
 
-Open **Settings** at the bottom of the workspace sidebar to choose `System`,
-`Light`, or `Dark`, select separate light and dark terminal themes, and change
-the terminal font family or size. These preferences and the workspace list are
-stored in the current browser.
+Open **Settings** at the bottom of the workspace sidebar to manage the desktop
+connection, choose `System`, `Light`, or `Dark`, select separate light and dark
+terminal themes, and change the terminal font family or size. Appearance,
+workspace, and non-secret connection preferences are stored on the current
+device.
 
 Kumokara uses a portable system monospace stack by default. If a prompt such as
 Oh My Posh uses Nerd Font icons, install a Nerd Font and enter its exact family
@@ -81,9 +100,9 @@ default no-auth mode to an untrusted network.
 ## How it works
 
 ```text
-Browser attachments
-        │ WebSocket
-        ▼
+Browser / Tauri attachments
+             │ WebSocket
+             ▼
 SessionRegistry (runtime source of truth)
         ├── SessionInfo (cwd + optional detected agent)
         ├── AgentAdapterRegistry (built-ins + registered plugins)
@@ -92,9 +111,9 @@ SessionRegistry (runtime source of truth)
         └── live output broadcast
 ```
 
-The browser can detach and attach again. On attachment, Kumokara first replays
+Clients can detach and attach again. On attachment, Kumokara first replays
 retained output and then switches to the live stream without a replay/live race.
-Each browser fits its own xterm viewport locally; the focused browser owns the
+Each client fits its own xterm viewport locally; the focused client owns the
 active PTY resize. Attachments receive raw binary terminal frames and batch
 writes behind xterm's parser. xterm uses its WebGL2 renderer when available and
 shows a compatibility-renderer warning when GPU rendering is unavailable. A
@@ -113,6 +132,10 @@ The Rust workspace contains six focused crates:
 - `kumokara-auth`: token generation and validation;
 - `kumokara-server`: session runtime and HTTP/WebSocket boundary;
 - `kumokara`: local and remote server entry points.
+
+`apps/desktop` is intentionally outside the publishable Cargo workspace. It is
+a Tauri host that embeds `web/`, starts `kumokara-server` without duplicating
+the browser asset bundle, and still controls sessions only through WebSocket.
 
 ## Project status
 
@@ -148,6 +171,7 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 npm --prefix web run build
+cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml
 ```
 
 To benchmark the binary transport decoder:

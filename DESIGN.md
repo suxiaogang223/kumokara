@@ -257,7 +257,42 @@ Server 默认使用无鉴权开发模式：连接建立后主动发送 `auth_ok`
 - Remote 模式应放在 TLS/reverse proxy 后；
 - cwd 和进程访问默认采用单用户自部署信任模型；多用户部署前必须增加 OS 级隔离。
 
-## 11. 下一阶段
+## 11. Desktop Client
+
+Phase 2 使用 Tauri 2 封装现有 React/xterm 前端，不进行 Rust/WASM UI 重写。桌面形态的目标是
+提供原生窗口、安装包和本地服务生命周期，同时保留浏览器版本与唯一的 WebSocket control
+protocol。
+
+```text
+Kumokara Desktop
+├── Tauri WebView
+│   └── web/ (React + xterm WebGL)
+├── private local server
+│   ├── random 127.0.0.1 port
+│   └── per-process 256-bit token
+└── Connection setting
+    ├── local → private local server
+    └── remote → wss/https server
+```
+
+- 桌面进程在启动 WebView 前预占随机 loopback port，并在 Tauri async runtime 内启动
+  `kumokara-server`；关闭 App 即结束该本地 runtime；
+- 本地 server 强制 token 鉴权。token 只通过本地 Tauri IPC 返回给受信 WebView，不写入磁盘、
+  命令行或日志；
+- remote token 只保存在前端内存。持久化信息仅包括 local/remote 模式、server URL 和是否显式
+  允许明文远程连接；
+- 非 loopback remote 默认必须使用 TLS。`http/ws` 只有在用户显式选择 insecure remote 后才允许；
+- Tauri host 不 import `SessionRegistry` 进行控制。无论 local 或 remote，前端都只使用现有
+  WebSocket JSON control + binary PTY protocol；
+- 桌面依赖关闭 `kumokara-server` 的 `embedded-web` feature，避免 Tauri assets 和 Server assets
+  在同一 App 内重复打包；
+- WebSocket 切换必须以 connection identity 隔离回调，旧连接的迟到 `message/close` 不能污染
+  新连接状态。
+
+WASM 仍不作为 UI 迁移目标。只有出现可复用且 CPU 密集的纯逻辑（例如 VT parsing/search）时，
+才单独评估 WASM module；原生 `wgpu` terminal 继续作为后续独立原型，而不是 Tauri 前置条件。
+
+## 12. 下一阶段
 
 按以下顺序继续，避免再次铺设未接通的占位模块：
 

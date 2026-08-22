@@ -5,6 +5,9 @@
 # Node / Web
 web/node_modules/
 web/dist/
+apps/desktop/node_modules/
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/gen/
 *.tsbuildinfo
 
 # IDE

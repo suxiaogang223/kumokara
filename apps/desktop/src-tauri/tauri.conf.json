@@ -1,0 +1,53 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Kumokara",
+  "version": "0.1.2",
+  "identifier": "dev.kumokara.desktop",
+  "build": {
+    "beforeDevCommand": {
+      "cwd": "../../../web",
+      "script": "npm run dev -- --host 127.0.0.1",
+      "wait": false
+    },
+    "devUrl": "http://127.0.0.1:5173",
+    "beforeBuildCommand": {
+      "cwd": "../../../web",
+      "script": "npm run build"
+    },
+    "frontendDist": "../../../web/dist",
+    "additionalWatchFolders": ["../../../web/src"]
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Kumokara",
+        "width": 1380,
+        "height": 860,
+        "minWidth": 860,
+        "minHeight": 560,
+        "center": true,
+        "backgroundColor": "#161320",
+        "acceptFirstMouse": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost ws: wss: http: https:; img-src 'self' asset: data:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'",
+      "freezePrototype": true,
+      "capabilities": ["main-window"]
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "shortDescription": "Persistent terminals for AI coding agents",
+    "longDescription": "A desktop client for local and remote Kumokara terminal sessions."
+  }
+}

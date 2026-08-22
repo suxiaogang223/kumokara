@@ -8,6 +8,7 @@ members = [
     "crates/kumokara-server",
     "crates/kumokara-cli",
 ]
+exclude = ["apps/desktop/src-tauri"]
 
 [workspace.package]
 version = "0.1.2"

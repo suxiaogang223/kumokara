@@ -7,9 +7,13 @@ pub mod session_registry;
 pub mod ws_handler;
 
 use anyhow::Result;
+#[cfg(feature = "embedded-web")]
 use axum::body::Body;
+#[cfg(feature = "embedded-web")]
 use axum::http::{header, StatusCode, Uri};
+#[cfg(feature = "embedded-web")]
 use axum::response::Response;
+#[cfg(feature = "embedded-web")]
 use include_dir::{include_dir, Dir};
 use kumokara_agent::AgentAdapterRegistry;
 use kumokara_auth::AuthManager;
@@ -20,6 +24,7 @@ use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 
+#[cfg(feature = "embedded-web")]
 static EMBEDDED_WEB: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/web-dist");
 
 const DEFAULT_TERMINAL_COLS: u16 = 100;
@@ -54,6 +59,15 @@ impl AppState {
 }
 
 pub async fn serve(addr: SocketAddr, state: AppState) -> Result<()> {
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    serve_listener(listener, state).await
+}
+
+/// Serve Kumokara using an already-bound listener.
+///
+/// Desktop hosts use this entry point to reserve a random loopback port before
+/// the WebView starts, then pass the exact endpoint to the frontend over IPC.
+pub async fn serve_listener(listener: tokio::net::TcpListener, state: AppState) -> Result<()> {
     ensure_default_session(&state).await?;
     if !state.auth_required() {
         tracing::warn!("Authentication is disabled; use --require-token outside trusted development environments");
@@ -73,13 +87,17 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> Result<()> {
             ServeDir::new(&dist_dir).not_found_service(ServeFile::new(dist_dir.join("index.html")));
         app.fallback_service(spa)
     } else {
-        tracing::info!("Serving the embedded Kumokara web interface");
-        app.fallback(embedded_asset)
+        #[cfg(feature = "embedded-web")]
+        {
+            tracing::info!("Serving the embedded Kumokara web interface");
+            app.fallback(embedded_asset)
+        }
+        #[cfg(not(feature = "embedded-web"))]
+        app
     }
     .with_state(state);
 
-    tracing::info!(%addr, "Kumokara server listening");
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    tracing::info!(addr = %listener.local_addr()?, "Kumokara server listening");
     axum::serve(listener, app).await?;
     Ok(())
 }
@@ -109,6 +127,7 @@ fn find_dist_dir() -> Option<PathBuf> {
         .find(|path| path.join("index.html").is_file())
 }
 
+#[cfg(feature = "embedded-web")]
 async fn embedded_asset(uri: Uri) -> Response {
     let requested = uri.path().trim_start_matches('/');
     let requested = if requested.is_empty() {
@@ -163,7 +182,7 @@ async fn health_check(
     }))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "embedded-web"))]
 mod embedded_web_tests {
     use super::*;
     use axum::body::to_bytes;

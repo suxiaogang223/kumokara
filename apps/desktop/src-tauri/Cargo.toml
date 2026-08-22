@@ -1,0 +1,21 @@
+[package]
+name = "kumokara-desktop"
+version = "0.1.2"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/suxiaogang223/kumokara"
+publish = false
+
+[lib]
+name = "kumokara_desktop"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.6.3", features = [] }
+
+[dependencies]
+kumokara-auth = { path = "../../../crates/kumokara-auth" }
+kumokara-server = { path = "../../../crates/kumokara-server", default-features = false }
+serde = { version = "1", features = ["derive"] }
+tauri = { version = "2.11.5", features = [] }
+tokio = { version = "1", features = ["net"] }
