@@ -139,19 +139,13 @@ async fn dispatch(
 ) -> anyhow::Result<()> {
     match message {
         ClientMessage::Auth { .. } => {
-            if state.auth_required() {
-                send_error(
-                    sender,
-                    None,
-                    "INVALID_MESSAGE",
-                    "Connection is already authenticated",
-                )
-                .await?;
-            } else {
-                // Keep auth disabled mode tolerant of clients reconnecting with
-                // a token retained from a previously protected server.
-                send_auth_ok(state, sender).await?;
-            }
+            send_error(
+                sender,
+                None,
+                "INVALID_MESSAGE",
+                "Connection is already authenticated",
+            )
+            .await?;
         }
         ClientMessage::SessionCreate {
             request_id,
@@ -290,38 +284,14 @@ async fn dispatch(
                 .await?;
             }
         }
-        ClientMessage::TerminalInput {
-            session_id,
-            data_base64,
-            cols,
-            rows,
-        } => {
-            use base64::Engine;
-            match base64::engine::general_purpose::STANDARD.decode(data_base64) {
-                Ok(data) => {
-                    let size = cols.zip(rows);
-                    if let Err(error) = state
-                        .session_registry
-                        .write_input_at_size(&session_id, &data, size)
-                        .await
-                    {
-                        send_error(sender, None, "SESSION_NOT_FOUND", &error.to_string()).await?;
-                    }
-                }
-                Err(error) => {
-                    send_error(sender, None, "INVALID_MESSAGE", &error.to_string()).await?;
-                }
-            }
-        }
         ClientMessage::TerminalResize {
             session_id,
             cols,
             rows,
             active,
         } => {
-            // Old clients omitted `active` and remain passive. The focused
-            // browser explicitly claims responsibility for the PTY grid so a
-            // background page cannot resize a shared full-screen TUI.
+            // Only the focused browser claims responsibility for the PTY grid;
+            // passive views cannot resize a shared full-screen TUI.
             if active {
                 if let Err(error) = state.session_registry.resize(&session_id, cols, rows).await {
                     send_error(sender, None, "SESSION_RESIZE_FAILED", &error.to_string()).await?;
@@ -423,16 +393,17 @@ async fn attach_output(
 }
 
 async fn send_terminal_output(sender: &WsSender, chunk: TerminalChunk) -> anyhow::Result<()> {
-    use base64::Engine;
-    send_message(
-        sender,
-        &ServerMessage::TerminalOutput {
-            session_id: chunk.session_id,
-            seq: chunk.seq,
-            data_base64: base64::engine::general_purpose::STANDARD.encode(chunk.data),
-        },
-    )
-    .await
+    let session_id = uuid::Uuid::parse_str(&chunk.session_id)?;
+    let mut frame = Vec::with_capacity(24 + chunk.data.len());
+    frame.extend_from_slice(session_id.as_bytes());
+    frame.extend_from_slice(&chunk.seq.to_be_bytes());
+    frame.extend_from_slice(&chunk.data);
+    sender
+        .lock()
+        .await
+        .send(Message::Binary(frame.into()))
+        .await?;
+    Ok(())
 }
 
 async fn send_message(sender: &WsSender, message: &ServerMessage) -> anyhow::Result<()> {

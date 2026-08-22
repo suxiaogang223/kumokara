@@ -228,14 +228,19 @@ session_create  { request_id, cwd?, cols, rows }
 session_list    { request_id }
 session_attach  { request_id, session_id, last_seq? }
 session_destroy { request_id, session_id }
-terminal_input  { session_id, data_base64, cols?, rows? }
 terminal_resize { session_id, cols, rows, active } # only active viewport controls PTY
 terminal_title  { session_id, title }       # xterm OSC 0/2
 agent_update    { session_id, code_agent, session_title?, status?, detail?, mode?, task_progress? }
 ```
 
-`terminal_output` 同样使用 `data_base64`，避免 PTY 字节跨 chunk 拆分 UTF-8 字符时发生
-有损转换。二进制 input frame 仍用于不需要 JSON 的客户端。
+PTY payload 双向统一使用 binary WebSocket frame，不保留 JSON/base64 I/O 路径。前 16 bytes
+为 Session UUID，随后 8 bytes 在 server-to-client output 中为 big-endian sequence，在
+client-to-server input 中保留为零，最后是 raw PTY bytes。输入前如需改变终端尺寸，客户端先
+发送 `terminal_resize`；WebSocket 消息顺序保证 resize 先于紧随其后的 binary input 生效。
+
+Web 前端以 animation frame 合并连续 output，并且只有在 xterm 完成上一批解析后才提交下一批；
+WebGL2 是默认 renderer。初始化失败时明确显示 compatibility renderer 状态；context lost 只重试
+一次，失败后保持 compatibility renderer，不引入多轮恢复状态机。
 
 协议不包含 `workspace_id`、Workspace 消息或 Workspace REST API。Agent 也不通过协议
 单独启动；用户始终在普通 Shell 中运行 Agent。
@@ -288,7 +293,7 @@ kumokara capabilities [--json]
 ```
 
 - `list/create/close/send/output/resize` 分别复用现有 `session_list`、`session_create`、
-  `session_destroy`、`terminal_input`、`session_attach/detach`、`terminal_resize` 消息；
+  `session_destroy`、binary input frame、`session_attach/detach`、`terminal_resize`；
 - `inspect` 第一阶段通过 `session_list` 在客户端过滤，避免为了单条查询扩展服务端协议；
 - `current` 从 PTY 已有的 `KUMOKARA_SESSION_ID` 读取当前 Session，并通过服务端 list 验证它
   仍然存在；不在 Kumokara PTY 中运行时返回明确的 non-zero exit code；

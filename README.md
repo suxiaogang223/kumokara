@@ -95,7 +95,11 @@ SessionRegistry (runtime source of truth)
 The browser can detach and attach again. On attachment, Kumokara first replays
 retained output and then switches to the live stream without a replay/live race.
 Each browser fits its own xterm viewport locally; the focused browser owns the
-active PTY resize.
+active PTY resize. Attachments receive raw binary terminal frames and batch
+writes behind xterm's parser. xterm uses its WebGL2 renderer when available and
+shows a compatibility-renderer warning when GPU rendering is unavailable. A
+lost WebGL context gets one recovery attempt before the compatibility renderer
+remains active.
 
 Workspace navigation is browser-local: it stores directory paths and view
 preferences without creating a second server runtime model. The canonical
@@ -144,6 +148,12 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 npm --prefix web run build
+```
+
+To benchmark the binary transport decoder:
+
+```bash
+npm --prefix web run bench
 ```
 
 ## License

@@ -21,7 +21,6 @@ chrono.workspace = true
 tracing.workspace = true
 anyhow.workspace = true
 futures.workspace = true
-base64 = "0.22"
 include_dir = "0.7.4"
 
 [dev-dependencies]

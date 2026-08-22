@@ -1,10 +1,12 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Terminal as XTerm, type ITheme } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
+import { WebglAddon } from '@xterm/addon-webgl'
 import '@xterm/xterm/css/xterm.css'
 import { onTerminalOutput } from '../hooks/useWebSocket'
 import type { AgentStatus } from '../protocol'
 import { useSessionStore } from '../store/sessionStore'
+import { encodeTerminalInputFrame, TerminalWriteQueue } from '../terminal/terminalOutput'
 import { createRequestId } from '../utils/requestId'
 
 interface Props {
@@ -22,6 +24,8 @@ const AGENT_STATUSES = new Set<AgentStatus>([
   'error',
   'finished',
 ])
+
+type RendererState = 'webgl' | 'recovering' | 'compatibility'
 
 function decodeTapText(value: string, allowLiteral = false) {
   if (!value) return undefined
@@ -43,6 +47,7 @@ function sanitizeDisplayText(value: string, maxChars = 160) {
 }
 
 export function Terminal({ sessionId, theme, fontFamily, fontSize }: Props) {
+  const [rendererState, setRendererState] = useState<RendererState>('webgl')
   const containerRef = useRef<HTMLDivElement>(null)
   const xtermRef = useRef<XTerm | null>(null)
   const attachedSessionRef = useRef<string | null>(null)
@@ -52,6 +57,7 @@ export function Terminal({ sessionId, theme, fontFamily, fontSize }: Props) {
   const iconTitleRef = useRef<string | null>(null)
   const windowTitleRef = useRef<string | null>(null)
   const lastPtySizeRef = useRef<string | null>(null)
+  const writeQueueRef = useRef<TerminalWriteQueue | null>(null)
   const ws = useSessionStore((s) => s.ws)
   const ptyCols = useSessionStore((state) => (
     state.sessions.find((session) => session.id === sessionId)?.cols
@@ -73,7 +79,52 @@ export function Terminal({ sessionId, theme, fontFamily, fontSize }: Props) {
     const fitAddon = new FitAddon()
     term.loadAddon(fitAddon)
     term.open(containerRef.current)
+    // Establish the initial grid before swapping in the optional renderer so
+    // both renderer paths start from the same fitted dimensions.
     fitAddon.fit()
+
+    let webglAddon: WebglAddon | null = null
+    let contextLossSubscription: { dispose: () => void } | null = null
+    let rendererRetryTimer: number | null = null
+    let recoveryAttempted = false
+    let disposed = false
+
+    function releaseWebgl() {
+      contextLossSubscription?.dispose()
+      contextLossSubscription = null
+      webglAddon?.dispose()
+      webglAddon = null
+    }
+
+    function handleContextLoss() {
+      releaseWebgl()
+      if (disposed) return
+      if (recoveryAttempted) {
+        setRendererState('compatibility')
+        return
+      }
+
+      recoveryAttempted = true
+      setRendererState('recovering')
+      rendererRetryTimer = window.setTimeout(activateWebgl, 1_000)
+    }
+
+    function activateWebgl() {
+      rendererRetryTimer = null
+      if (disposed) return
+      try {
+        const addon = new WebglAddon()
+        webglAddon = addon
+        term.loadAddon(addon)
+        contextLossSubscription = addon.onContextLoss(handleContextLoss)
+        setRendererState('webgl')
+      } catch (error) {
+        releaseWebgl()
+        setRendererState('compatibility')
+        console.warn('WebGL terminal renderer is unavailable', error)
+      }
+    }
+    activateWebgl()
 
     term.attachCustomWheelEventHandler(() => {
       // xterm converts wheel input to Up/Down when a normal buffer has no
@@ -85,6 +136,8 @@ export function Terminal({ sessionId, theme, fontFamily, fontSize }: Props) {
     })
 
     xtermRef.current = term
+    const writeQueue = new TerminalWriteQueue((data, callback) => term.write(data, callback))
+    writeQueueRef.current = writeQueue
 
     const reportTerminalTitle = () => {
       const currentWs = useSessionStore.getState().ws
@@ -220,9 +273,9 @@ export function Terminal({ sessionId, theme, fontFamily, fontSize }: Props) {
     document.addEventListener('visibilitychange', reclaimActiveViewport)
     scheduleFit()
 
-    const unsub = onTerminalOutput((sid, _seq, data) => {
+    const unsub = onTerminalOutput((sid, seq, data) => {
       if (sid === attachedSessionRef.current && xtermRef.current) {
-        xtermRef.current.write(data)
+        writeQueue.enqueue(seq, data)
       }
     })
 
@@ -235,38 +288,42 @@ export function Terminal({ sessionId, theme, fontFamily, fontSize }: Props) {
       const currentWs = useSessionStore.getState().ws
       const currentSid = attachedSessionRef.current
       if (currentWs && currentSid && currentWs.readyState === WebSocket.OPEN) {
-        const encoder = new TextEncoder()
-        const bytes = encoder.encode(data)
-        let binary = ''
-        for (let i = 0; i < bytes.length; i++) {
-          binary += String.fromCharCode(bytes[i])
+        const sizeKey = `${currentSid}:${term.cols}x${term.rows}`
+        if (lastPtySizeRef.current !== sizeKey) {
+          currentWs.send(JSON.stringify({
+            type: 'terminal_resize',
+            session_id: currentSid,
+            cols: term.cols,
+            rows: term.rows,
+            active: true,
+          }))
+          lastPtySizeRef.current = sizeKey
         }
-        const base64 = btoa(binary)
-        const message = {
-          type: 'terminal_input',
-          session_id: currentSid,
-          data_base64: base64,
-          cols: term.cols,
-          rows: term.rows,
-        }
-        currentWs.send(JSON.stringify(message))
-        lastPtySizeRef.current = `${currentSid}:${term.cols}x${term.rows}`
+        currentWs.send(encodeTerminalInputFrame(
+          currentSid,
+          new TextEncoder().encode(data),
+        ))
       }
     }
 
     const inputSubscription = term.onData(handleData)
 
     return () => {
+      disposed = true
+      if (rendererRetryTimer !== null) window.clearTimeout(rendererRetryTimer)
       resizeObserver.disconnect()
       window.removeEventListener('focus', reclaimActiveViewport)
       document.removeEventListener('visibilitychange', reclaimActiveViewport)
       if (resizeFrame !== null) window.cancelAnimationFrame(resizeFrame)
       if (ptyResizeTimer !== null) window.clearTimeout(ptyResizeTimer)
       scheduleFitRef.current = () => {}
+      writeQueue.dispose()
+      writeQueueRef.current = null
       unsub()
       inputSubscription.dispose()
       titleSubscriptions.forEach((subscription) => subscription.dispose())
       tapSubscription.dispose()
+      contextLossSubscription?.dispose()
       term.dispose()
     }
   }, [])
@@ -304,6 +361,7 @@ export function Terminal({ sessionId, theme, fontFamily, fontSize }: Props) {
       // viewport preserves that mode and leaks mouse coordinates into the next
       // shell. Disconnect input first, then reset all terminal modes.
       attachedSessionRef.current = null
+      writeQueueRef.current?.clear()
       term.reset()
       agentMetadataRef.current.clear()
       terminalTitleRef.current = null
@@ -333,6 +391,15 @@ export function Terminal({ sessionId, theme, fontFamily, fontSize }: Props) {
   }, [sessionId, ws])
 
   return (
-    <div className="terminal-host" ref={containerRef} />
+    <div className="terminal-surface">
+      <div className="terminal-host" ref={containerRef} />
+      {rendererState !== 'webgl' && (
+        <div className="terminal-renderer-warning" role="status">
+          {rendererState === 'recovering'
+            ? 'GPU renderer restarting…'
+            : 'GPU unavailable · compatibility renderer'}
+        </div>
+      )}
+    </div>
   )
 }

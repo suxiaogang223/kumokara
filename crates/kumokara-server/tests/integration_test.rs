@@ -82,14 +82,6 @@ async fn websocket_connects_without_auth_by_default() {
     assert_eq!(recv_json(&mut socket).await["type"], "auth_ok");
     socket
         .send(json_message(serde_json::json!({
-            "type": "auth",
-            "token": "retained-client-token"
-        })))
-        .await
-        .unwrap();
-    assert_eq!(recv_json(&mut socket).await["type"], "auth_ok");
-    socket
-        .send(json_message(serde_json::json!({
             "type": "session_list",
             "request_id": "list"
         })))
@@ -214,13 +206,14 @@ async fn only_the_active_browser_viewport_resizes_the_shared_pty() {
         (Some(100), Some(30))
     );
 
-    // Legacy clients omitted `active`; keep those resize messages passive.
+    // Passive views must not resize the shared PTY.
     socket
         .send(json_message(serde_json::json!({
             "type": "terminal_resize",
             "session_id": session_id,
             "cols": 40,
-            "rows": 10
+            "rows": 10,
+            "active": false
         })))
         .await
         .unwrap();
@@ -329,8 +322,6 @@ async fn agent_metadata_and_terminal_title_round_trip_over_websocket() {
 
 #[tokio::test]
 async fn session_survives_websocket_reconnect() {
-    use base64::Engine;
-
     let server = spawn_test_server(Some(AuthManager::new())).await;
     let token = server.token.as_deref().unwrap();
     let url = format!("ws://{}/api/ws", server.addr);
@@ -374,31 +365,15 @@ async fn session_survives_websocket_reconnect() {
         })))
         .await
         .unwrap();
-    let input =
-        base64::engine::general_purpose::STANDARD.encode(b"printf '__kumokara_reconnected__\\n'\n");
     second
-        .send(json_message(serde_json::json!({
-            "type": "terminal_input",
-            "session_id": session_id,
-            "data_base64": input
-        })))
+        .send(binary_input_message(
+            &session_id,
+            b"printf '__kumokara_reconnected__\\n'\n",
+        ))
         .await
         .unwrap();
 
-    tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            let output = recv_until_type(&mut second, "terminal_output").await;
-            let data = output["data_base64"]
-                .as_str()
-                .and_then(|data| base64::engine::general_purpose::STANDARD.decode(data).ok())
-                .unwrap_or_default();
-            if String::from_utf8_lossy(&data).contains("__kumokara_reconnected__") {
-                break;
-            }
-        }
-    })
-    .await
-    .expect("reconnected client did not receive PTY output");
+    recv_binary_until_contains(&mut second, &session_id, b"__kumokara_reconnected__").await;
 
     second
         .send(json_message(serde_json::json!({
@@ -412,6 +387,90 @@ async fn session_survives_websocket_reconnect() {
         recv_until_type(&mut second, "session_destroyed").await["type"],
         "session_destroyed"
     );
+}
+
+#[tokio::test]
+async fn terminal_output_is_always_binary() {
+    let server = spawn_test_server(None).await;
+    let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{}/api/ws", server.addr))
+        .await
+        .unwrap();
+    assert_eq!(recv_json(&mut socket).await["type"], "auth_ok");
+
+    socket
+        .send(json_message(serde_json::json!({
+            "type": "session_create",
+            "request_id": "binary-create",
+            "cols": 80,
+            "rows": 24
+        })))
+        .await
+        .unwrap();
+    let created = recv_until_type(&mut socket, "session_created").await;
+    let session_id = created["session"]["id"].as_str().unwrap().to_string();
+
+    socket
+        .send(json_message(serde_json::json!({
+            "type": "session_attach",
+            "request_id": "binary-attach",
+            "session_id": session_id
+        })))
+        .await
+        .unwrap();
+    socket
+        .send(binary_input_message(
+            &session_id,
+            b"printf '__kumokara_binary_output__\\n'\n",
+        ))
+        .await
+        .unwrap();
+
+    recv_binary_until_contains(&mut socket, &session_id, b"__kumokara_binary_output__").await;
+}
+
+async fn recv_binary_until_contains<S>(
+    socket: &mut tokio_tungstenite::WebSocketStream<S>,
+    session_id: &str,
+    expected: &[u8],
+) where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let expected_id = uuid::Uuid::parse_str(session_id).unwrap();
+    let mut observed = Vec::new();
+    let mut previous_seq = None;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match socket.next().await.unwrap().unwrap() {
+                Message::Binary(frame) => {
+                    assert!(frame.len() >= 24);
+                    assert_eq!(uuid::Uuid::from_slice(&frame[..16]).unwrap(), expected_id);
+                    let seq = u64::from_be_bytes(frame[16..24].try_into().unwrap());
+                    if let Some(previous_seq) = previous_seq {
+                        assert!(seq > previous_seq);
+                    }
+                    previous_seq = Some(seq);
+                    observed.extend_from_slice(&frame[24..]);
+                    if observed
+                        .windows(expected.len())
+                        .any(|window| window == expected)
+                    {
+                        break;
+                    }
+                }
+                Message::Text(text) => {
+                    let message: serde_json::Value = serde_json::from_str(&text).unwrap();
+                    assert_ne!(
+                        message["type"], "terminal_output",
+                        "JSON output is forbidden"
+                    );
+                }
+                Message::Ping(data) => socket.send(Message::Pong(data)).await.unwrap(),
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("binary attachment did not receive expected PTY output");
 }
 
 async fn authenticate<S>(socket: &mut tokio_tungstenite::WebSocketStream<S>, token: &str)
@@ -430,6 +489,15 @@ where
 
 fn json_message(value: serde_json::Value) -> Message {
     Message::Text(value.to_string().into())
+}
+
+fn binary_input_message(session_id: &str, data: &[u8]) -> Message {
+    let session_id = uuid::Uuid::parse_str(session_id).unwrap();
+    let mut frame = Vec::with_capacity(24 + data.len());
+    frame.extend_from_slice(session_id.as_bytes());
+    frame.extend_from_slice(&0_u64.to_be_bytes());
+    frame.extend_from_slice(data);
+    Message::Binary(frame.into())
 }
 
 async fn recv_json<S>(socket: &mut tokio_tungstenite::WebSocketStream<S>) -> serde_json::Value

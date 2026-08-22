@@ -1,7 +1,7 @@
 //! JSON control messages exchanged over the WebSocket connection.
 //!
-//! Terminal input may also use binary frames with a 24-byte header:
-//! a 16-byte session UUID, an 8-byte sequence number, then raw input bytes.
+//! Terminal I/O uses binary frames with a 24-byte header: a 16-byte session
+//! UUID, an 8-byte big-endian sequence field, then raw terminal bytes.
 
 use crate::session::{AgentStatus, SessionInfo};
 use serde::{Deserialize, Serialize};
@@ -55,19 +55,10 @@ pub enum ClientMessage {
         request_id: String,
         session_id: String,
     },
-    TerminalInput {
-        session_id: String,
-        data_base64: String,
-        #[serde(default)]
-        cols: Option<u16>,
-        #[serde(default)]
-        rows: Option<u16>,
-    },
     TerminalResize {
         session_id: String,
         cols: u16,
         rows: u16,
-        #[serde(default)]
         active: bool,
     },
     TerminalTitle {
@@ -126,11 +117,6 @@ pub enum ServerMessage {
     DirectoryCreated {
         request_id: String,
         path: String,
-    },
-    TerminalOutput {
-        session_id: String,
-        seq: u64,
-        data_base64: String,
     },
     SessionDestroyed {
         session_id: String,

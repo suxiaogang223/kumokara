@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef } from 'react'
 import type { ClientMessage, ServerMessage } from '../protocol'
 import { useSessionStore } from '../store/sessionStore'
+import { decodeTerminalOutputFrame } from '../terminal/terminalOutput'
 import { createRequestId } from '../utils/requestId'
 
 export type TerminalOutputHandler = (sessionId: string, seq: number, data: Uint8Array) => void
@@ -73,24 +74,14 @@ export function useWebSocket() {
           break
         case 'directory_listing':
         case 'directory_created':
-          directoryBrowserHandlers.forEach((handler) => {
-            try { handler(message) } catch { /* isolate UI handlers */ }
-          })
-          break
-        case 'terminal_output':
-          const bytes = Uint8Array.from(atob(message.data_base64), (character) => character.charCodeAt(0))
-          terminalHandlers.forEach((handler) => {
-            try { handler(message.session_id, message.seq, bytes) } catch { /* isolate UI handlers */ }
-          })
+          directoryBrowserHandlers.forEach((handler) => handler(message))
           break
         case 'error':
           if (message.code === 'SESSION_CREATE_FAILED') {
             store.setSessionError(message.message || 'Failed to create session')
           }
           if (message.code.startsWith('DIRECTORY_')) {
-            directoryBrowserHandlers.forEach((handler) => {
-              try { handler(message) } catch { /* isolate UI handlers */ }
-            })
+            directoryBrowserHandlers.forEach((handler) => handler(message))
           }
           console.warn(`[${message.code}] ${message.message}`)
           break
@@ -104,6 +95,7 @@ export function useWebSocket() {
       if (disposed) return
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
       const socket = new WebSocket(`${protocol}//${window.location.host}/api/ws`)
+      socket.binaryType = 'arraybuffer'
       socketRef.current = socket
 
       socket.onopen = () => {
@@ -112,11 +104,22 @@ export function useWebSocket() {
         }
       }
       socket.onmessage = (event) => {
-        if (typeof event.data !== 'string') return
-        try {
-          handleMessage(JSON.parse(event.data) as ServerMessage)
-        } catch (error) {
-          console.warn('Invalid server message', error)
+        if (typeof event.data === 'string') {
+          try {
+            handleMessage(JSON.parse(event.data) as ServerMessage)
+          } catch (error) {
+            console.warn('Invalid server message', error)
+          }
+          return
+        }
+
+        if (event.data instanceof ArrayBuffer) {
+          try {
+            const message = decodeTerminalOutputFrame(event.data)
+            terminalHandlers.forEach((handler) => handler(message.sessionId, message.seq, message.data))
+          } catch (error) {
+            console.warn('Invalid binary terminal output', error)
+          }
         }
       }
       socket.onclose = () => {

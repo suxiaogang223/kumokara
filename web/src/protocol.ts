@@ -41,7 +41,6 @@ export type ClientMessage =
   | { type: 'session_attach'; request_id: string; session_id: string; last_seq?: number }
   | { type: 'session_detach'; session_id: string }
   | { type: 'session_destroy'; request_id: string; session_id: string }
-  | { type: 'terminal_input'; session_id: string; data_base64: string; cols?: number; rows?: number }
   | { type: 'terminal_resize'; session_id: string; cols: number; rows: number; active: boolean }
   | { type: 'terminal_title'; session_id: string; title: string }
   | {
@@ -62,7 +61,6 @@ export type ServerMessage =
   | { type: 'session_list'; request_id: string; sessions: SessionInfo[] }
   | { type: 'directory_listing'; request_id: string; home: string; path: string; parent: string | null; entries: DirectoryEntry[] }
   | { type: 'directory_created'; request_id: string; path: string }
-  | { type: 'terminal_output'; session_id: string; seq: number; data_base64: string }
   | { type: 'session_destroyed'; session_id: string }
   | { type: 'server_notification'; message: string }
   | { type: 'error'; request_id?: string; code: string; message: string }

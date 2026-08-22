@@ -951,7 +951,6 @@ version = "0.1.2"
 dependencies = [
  "anyhow",
  "axum",
- "base64",
  "chrono",
  "futures",
  "include_dir",

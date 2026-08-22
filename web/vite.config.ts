@@ -7,7 +7,7 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks: {
-          terminal: ['@xterm/xterm', '@xterm/addon-fit'],
+          terminal: ['@xterm/xterm', '@xterm/addon-fit', '@xterm/addon-webgl'],
         },
       },
     },
